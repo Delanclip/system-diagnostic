@@ -51,8 +51,9 @@ published on a support page or in an email stays valid after an update.
 
 ## Contributing
 
-`AGENTS.md` covers how changes are made here, including the rules that keep this
-repository safe to point customers at.
+Changes go through a pull request. A tool is only accepted with a complete and
+accurate list of what it collects, checkable against its source, and with the
+guarantees above intact.
 
 ## License
 
