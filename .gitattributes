@@ -1,0 +1,11 @@
+# Windows scripts and the plain-text files that ship beside them must reach a
+# Windows machine with CRLF endings, whatever the contributor's platform does
+# locally. cmd.exe is unforgiving about this and the files are downloaded, not
+# cloned, by the people who run them.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.txt text eol=crlf
+
+*.md text eol=lf
+*.sh text eol=lf

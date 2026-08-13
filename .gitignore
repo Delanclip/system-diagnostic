@@ -1,0 +1,8 @@
+# Release assets are built from the sources in this repository and published
+# through GitHub Releases. They are never committed here, so that the download
+# a customer gets can always be traced back to a tagged commit.
+*.zip
+
+# Diagnostic reports produced by running a tool. These come from a real machine
+# and have no business in a public repository.
+Delanclip-*-Diagnostics-*/
