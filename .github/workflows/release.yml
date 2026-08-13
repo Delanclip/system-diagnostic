@@ -1,0 +1,93 @@
+name: Release a tool
+
+# Publishes a tool as a GitHub Release, built from the commit this workflow is
+# dispatched against. Doing it here rather than by hand is what guarantees the
+# two things a download link depends on: the asset comes from committed
+# sources, and its name never changes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: "Tool folder under windows/"
+        required: true
+        default: ps3-eye
+        type: string
+      version:
+        description: "Version to tag and release, for example v1.0.0"
+        required: true
+        type: string
+      title:
+        description: "Release title"
+        required: true
+        default: Delanclip PS3 Eye Diagnostics v1.0.0
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble the asset
+        id: build
+        run: |
+          set -euo pipefail
+          dir="windows/${{ inputs.tool }}"
+          test -d "$dir" || { echo "::error::No tool folder at $dir"; exit 1; }
+
+          count=$(find "$dir" -maxdepth 1 -name '*.cmd' | wc -l)
+          test "$count" -eq 1 || { echo "::error::Expected exactly one .cmd in $dir, found $count"; exit 1; }
+          script=$(basename "$(find "$dir" -maxdepth 1 -name '*.cmd')")
+
+          # The asset name is the script name with a .zip extension and no
+          # version in it. releases/latest/download/<asset> is linked from the
+          # Delanclip website and only keeps working while this holds.
+          asset="${script%.cmd}.zip"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+          # CRLF is what makes these files usable on Windows. .gitattributes
+          # should have delivered it on checkout; refuse to publish if not,
+          # rather than shipping a script cmd.exe will choke on.
+          for f in "$script" README.txt; do
+            test -f "$dir/$f" || { echo "::error::$dir/$f is missing"; exit 1; }
+            grep -q $'\r' "$dir/$f" || { echo "::error::$dir/$f is not CRLF"; exit 1; }
+          done
+
+          ( cd "$dir" && zip -qX "$GITHUB_WORKSPACE/$asset" "$script" README.txt )
+
+          echo "Built $asset from $dir at ${{ github.sha }}"
+          unzip -l "$asset"
+
+      - name: Tag and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.build.outputs.asset }}
+        run: |
+          set -euo pipefail
+          cat > notes.md <<NOTES
+          Download **\`$ASSET\`** below, unzip it, and run the tool inside.
+
+          What it collects, what it does not collect, and how to read the
+          report it produces are documented in
+          [windows/${{ inputs.tool }}](https://github.com/${{ github.repository }}/tree/${{ inputs.version }}/windows/${{ inputs.tool }}).
+
+          The tool runs entirely on your own machine. It makes no network
+          connections, sends nothing anywhere, and downloads no further code.
+          The report it writes stays on your Desktop until you choose to send
+          it to Delanclip Support.
+
+          Built from \`${{ github.sha }}\`.
+          NOTES
+
+          gh release create "${{ inputs.version }}" "$ASSET" \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ inputs.title }}" \
+            --notes-file notes.md
+
+          echo "Permanent link:"
+          echo "https://github.com/${{ github.repository }}/releases/latest/download/$ASSET"
