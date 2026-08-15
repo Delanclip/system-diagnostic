@@ -1,26 +1,20 @@
-name: Release a tool
+name: Release diagnostic tools
 
-# Publishes a tool as a GitHub Release, built from the commit this workflow is
-# dispatched against. Doing it here rather than by hand is what guarantees the
-# two things a download link depends on: the asset comes from committed
-# sources, and its name never changes.
+# Publishes every Windows diagnostic tool as assets of one GitHub Release.
+# Keeping all assets in every release preserves permanent
+# releases/latest/download/<asset> links as new tools are added.
 
 on:
   workflow_dispatch:
     inputs:
-      tool:
-        description: "Tool folder under windows/"
-        required: true
-        default: ps3-eye
-        type: string
       version:
-        description: "Version to tag and release, for example v1.0.0"
+        description: "Version to tag and release, for example v1.1.0"
         required: true
         type: string
       title:
         description: "Release title"
         required: true
-        default: Delanclip PS3 Eye Diagnostics v1.0.0
+        default: Delanclip Diagnostic Tools
         type: string
 
 permissions:
@@ -32,62 +26,101 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Assemble the asset
+      - name: Assemble all Windows tool assets
         id: build
         run: |
           set -euo pipefail
-          dir="windows/${{ inputs.tool }}"
-          test -d "$dir" || { echo "::error::No tool folder at $dir"; exit 1; }
+          shopt -s nullglob
 
-          count=$(find "$dir" -maxdepth 1 -name '*.cmd' | wc -l)
-          test "$count" -eq 1 || { echo "::error::Expected exactly one .cmd in $dir, found $count"; exit 1; }
-          script=$(basename "$(find "$dir" -maxdepth 1 -name '*.cmd')")
+          assets=()
+          tool_count=0
 
-          # The asset name is the script name with a .zip extension and no
-          # version in it. releases/latest/download/<asset> is linked from the
-          # Delanclip website and only keeps working while this holds.
-          asset="${script%.cmd}.zip"
-          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          for dir in windows/*/; do
+            test -d "$dir" || continue
 
-          # CRLF is what makes these files usable on Windows. .gitattributes
-          # should have delivered it on checkout; refuse to publish if not,
-          # rather than shipping a script cmd.exe will choke on.
-          for f in "$script" README.txt; do
-            test -f "$dir/$f" || { echo "::error::$dir/$f is missing"; exit 1; }
-            grep -q $'\r' "$dir/$f" || { echo "::error::$dir/$f is not CRLF"; exit 1; }
+            scripts=("$dir"*.cmd)
+            if [ "${#scripts[@]}" -eq 0 ]; then
+              continue
+            fi
+
+            tool_count=$((tool_count + 1))
+            test "${#scripts[@]}" -eq 1 || {
+              echo "::error::Expected exactly one .cmd in $dir, found ${#scripts[@]}"
+              exit 1
+            }
+
+            script_path="${scripts[0]}"
+            script=$(basename "$script_path")
+            readme="${dir}README.txt"
+
+            test -f "$readme" || {
+              echo "::error::$readme is missing"
+              exit 1
+            }
+
+            # Windows-facing files must ship with CRLF endings.
+            for f in "$script_path" "$readme"; do
+              grep -q $'\r' "$f" || {
+                echo "::error::$f is not CRLF"
+                exit 1
+              }
+            done
+
+            asset="${script%.cmd}.zip"
+            test ! -e "$asset" || {
+              echo "::error::Duplicate asset name: $asset"
+              exit 1
+            }
+
+            (
+              cd "$dir"
+              zip -qX "$GITHUB_WORKSPACE/$asset" "$script" README.txt
+            )
+
+            assets+=("$asset")
+            echo "Built $asset from $dir at ${{ github.sha }}"
+            unzip -l "$asset"
           done
 
-          ( cd "$dir" && zip -qX "$GITHUB_WORKSPACE/$asset" "$script" README.txt )
+          test "$tool_count" -gt 0 || {
+            echo "::error::No Windows diagnostic tools were found"
+            exit 1
+          }
 
-          echo "Built $asset from $dir at ${{ github.sha }}"
-          unzip -l "$asset"
+          printf '%s\n' "${assets[@]}" > release-assets.txt
+          echo "count=${#assets[@]}" >> "$GITHUB_OUTPUT"
 
       - name: Tag and publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          ASSET: ${{ steps.build.outputs.asset }}
         run: |
           set -euo pipefail
-          cat > notes.md <<NOTES
-          Download **\`$ASSET\`** below, unzip it, and run the tool inside.
 
-          What it collects, what it does not collect, and how to read the
-          report it produces are documented in
-          [windows/${{ inputs.tool }}](https://github.com/${{ github.repository }}/tree/${{ inputs.version }}/windows/${{ inputs.tool }}).
+          mapfile -t assets < release-assets.txt
+          test "${#assets[@]}" -gt 0
 
-          The tool runs entirely on your own machine. It makes no network
-          connections, sends nothing anywhere, and downloads no further code.
-          The report it writes stays on your Desktop until you choose to send
-          it to Delanclip Support.
+          {
+            echo "This release contains all currently published Delanclip Windows diagnostic tools."
+            echo
+            echo "Each tool runs entirely on the customer's machine. It makes no network connections,"
+            echo "sends nothing anywhere, and downloads no further code. Reports remain local until"
+            echo "the customer chooses to send them to Delanclip Support."
+            echo
+            echo "Assets:"
+            for asset in "${assets[@]}"; do
+              echo "- \`$asset\`"
+            done
+            echo
+            echo "Built from \`${{ github.sha }}\`."
+          } > notes.md
 
-          Built from \`${{ github.sha }}\`.
-          NOTES
-
-          gh release create "${{ inputs.version }}" "$ASSET" \
+          gh release create "${{ inputs.version }}" "${assets[@]}" \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
-            --title "${{ inputs.title }}" \
+            --title "${{ inputs.title }} ${{ inputs.version }}" \
             --notes-file notes.md
 
-          echo "Permanent link:"
-          echo "https://github.com/${{ github.repository }}/releases/latest/download/$ASSET"
+          echo "Permanent latest-release links:"
+          for asset in "${assets[@]}"; do
+            echo "https://github.com/${{ github.repository }}/releases/latest/download/$asset"
+          done
