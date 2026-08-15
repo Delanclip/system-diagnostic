@@ -15,6 +15,7 @@ who read it and reply with a fix instead of another round of questions.
 | Platform | Tool | Use it when |
 | --- | --- | --- |
 | Windows | [PS3 Eye Diagnostic Tool](windows/ps3-eye/) | The PS3 Eye is not detected, Windows shows only `USB Camera`, or the right driver will not install |
+| Windows | [DelanCam1 Diagnostic Tool](windows/delancam1/) | DelanCam1 is detected incorrectly, Device Manager reports an error, or the camera produces a corrupted image |
 
 Linux and macOS tools will live in `linux/` and `macos/` folders beside
 `windows/`. Nothing has been published for them yet.
