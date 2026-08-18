@@ -21,18 +21,21 @@ problem. It checks several layers that can affect a USB camera:
 - camera-related Windows event logs and matching Application log errors;
 - USB power-policy output;
 - present driver records matching libusb, Zadig, WinUSB or APP Mode review terms;
-- a native stream test: opens DelanCam1 with Windows's own camera APIs and reads
-  live frames for a few seconds to measure whether frames arrive, how fast, and
-  whether the stream stalls.
+- a native stream test: opens DelanCam1 with Windows's own camera APIs, requests
+  the 640x480 @ 60 FPS format head tracking uses when the camera offers it, and
+  reads live frames for a few seconds to measure whether frames arrive, how
+  fast, whether the stream stalls, and whether frame content changes between
+  captures.
 
 The summary is intentionally conservative. A running application or installed
 security product is not automatically declared to be the cause. The report
 marks evidence that Delanclip Support should review together.
 
 This version also opens DelanCam1 for a few seconds and measures whether its
-video stream delivers frames at a steady rate. It does not save any image or
-video data, and it does not yet analyse frame content, so a clean stream test
-does not by itself prove that the image is visually correct.
+video stream delivers frames at a steady rate and whether frames change between
+captures (a frozen-stream check). It does not save any image or video data, and
+it cannot judge whether a changing image looks correct, so a clean stream test
+does not by itself prove that the picture is right.
 
 ## Usage
 
@@ -75,8 +78,9 @@ telemetry, upload reports or download code.
 
 The stream test briefly opens DelanCam1 using Windows's own camera APIs, but it
 does not save any image, video frame or frame content. It derives only counts,
-sizes and timestamps in memory and discards the underlying frame data
-immediately.
+sizes, timestamps and checksums in memory and discards the underlying frame
+data immediately. The checksums exist to detect a frozen stream (frames that
+never change); a checksum cannot be turned back into an image.
 
 The report stays on the Desktop until the customer chooses to send it.
 
@@ -117,7 +121,7 @@ It contains:
 | `delancam-driver.txt` | Bound driver provider, version, date, INF, signature and signer |
 | `delancam-pnp.txt` | Device Manager/PnP status, service and `ConfigManagerErrorCode` |
 | `usb-path.txt` | DelanCam1 parent-device chain and USB location paths |
-| `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format, frame count, measured FPS, zero-length frames, timestamp errors and stream stalls, or the exact Windows error if it could not be opened |
+| `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls and frozen-frame checksum results, or the exact Windows error if it could not be opened |
 | `problem-devices.txt` | System-wide PnP devices with non-zero Windows error codes |
 | `security-products.txt` | Antivirus products registered with Windows Security Center |
 | `defender-status.txt` | Selected Microsoft Defender protection-status fields |
@@ -154,10 +158,18 @@ The stream test uses Windows's built-in Windows Runtime camera APIs
 used by the Windows Camera app. Nothing is downloaded or installed to run it.
 It selects DelanCam1 by matching its known VID/PID first, and falls back to a
 name match if that identifier is not present, so a device renamed by an
-unexpected driver can still be tested. Every Windows Runtime call is bounded by
-a timeout, so a stalled or unresponsive camera cannot hang the rest of the
-diagnostic run; a timeout is recorded as an error in `stream-test.txt` like any
-other failure.
+unexpected driver can still be tested. Before starting the stream it asks the
+camera for 640x480 at 60 FPS - the settings head-tracking software uses - and
+falls back to the camera's default format if that request fails. Every Windows
+Runtime call is bounded by a timeout, so a stalled or unresponsive camera
+cannot hang the rest of the diagnostic run; a timeout is recorded as an error
+in `stream-test.txt` like any other failure.
+
+During capture each frame is checksummed in memory (MD5 over the raw pixel
+buffer) solely to count how many distinct frame contents arrived. A healthy
+live sensor produces a different checksum for every frame; a stream whose
+checksums never change is frozen at the source. The pixel data itself is
+discarded immediately after the checksum is computed.
 
 Windows can deny camera access through privacy settings or policy, and Microsoft
 Defender exposes protection status through Windows PowerShell. Those system

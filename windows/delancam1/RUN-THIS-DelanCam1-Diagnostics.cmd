@@ -155,9 +155,11 @@ Collected:
 - recent Windows camera-access registry history with user profile names redacted
 - recent camera-related Windows event logs and matching application errors
 - recent matching PnP events and SetupAPI excerpts
-- a short native stream test: opens DelanCam1 with Windows camera APIs and
+- a short native stream test: opens DelanCam1 with Windows camera APIs,
+  requests the 640x480 @ 60 FPS format head tracking uses when available,
   measures whether frames arrive, how fast, and whether the stream stalls,
-  without saving any frame image or video data
+  and checksums frames in memory to detect a frozen stream, without saving
+  any frame image or video data
 - active power scheme and USB power-policy output when available
 - a short diagnostic summary
 
@@ -310,6 +312,9 @@ $script:streamTestZeroLengthFrames = 0
 $script:streamTestTimestampErrors = 0
 $script:streamTestStreamStalls = 0
 $script:streamTestGapPattern = 'steady'
+$script:streamTestHashedFrames = 0
+$script:streamTestDistinctFrames = 0
+$script:streamTestIdenticalPairs = 0
 $script:streamTestApiError = $null
 Run-Step 'DelanCam1 stream test' {
     $path = Join-Path $work 'stream-test.txt'
@@ -366,6 +371,7 @@ Run-Step 'DelanCam1 stream test' {
         [Windows.Media.Capture.MediaCaptureSharingMode,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
         [Windows.Media.Capture.MediaCaptureMemoryPreference,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
         [Windows.Media.Capture.StreamingCaptureMode,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Storage.Streams.Buffer,Windows.Storage.Streams,ContentType=WindowsRuntime] | Out-Null
 
         $devices = Wait-WinRtOperation ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync([Windows.Devices.Enumeration.DeviceClass]::VideoCapture)) ([Windows.Devices.Enumeration.DeviceInformationCollection]) 5000
 
@@ -434,6 +440,34 @@ Run-Step 'DelanCam1 stream test' {
         }
         $lines.Add('')
 
+        $requestedFormat = $null
+        foreach ($subtypePref in @('MJPG','NV12','YUY2')) {
+            foreach ($fmt in $frameSource.SupportedFormats) {
+                $vf = $fmt.VideoFormat
+                $fr = $fmt.FrameRate
+                $fmtFps = 0
+                if ($fr -and $fr.Denominator -ne 0) { $fmtFps = $fr.Numerator / $fr.Denominator }
+                if ($vf.Width -eq 640 -and $vf.Height -eq 480 -and [math]::Round($fmtFps) -eq 60 -and $fmt.Subtype -eq $subtypePref) {
+                    $requestedFormat = $fmt
+                    break
+                }
+            }
+            if ($requestedFormat) { break }
+        }
+        if ($requestedFormat) {
+            try {
+                Wait-WinRtAction ($frameSource.SetFormatAsync($requestedFormat)) 5000
+                $lines.Add("Requested format: $($requestedFormat.Subtype) 640x480 @ 60fps (the settings OpenTrack uses) - set successfully")
+            }
+            catch {
+                $lines.Add("Requested format: $($requestedFormat.Subtype) 640x480 @ 60fps could not be set ($($_.Exception.Message)); continuing with the device default format")
+            }
+        }
+        else {
+            $lines.Add('Requested format: 640x480 @ 60fps is not in the supported format list; continuing with the device default format')
+        }
+        $lines.Add('')
+
         $current = $frameSource.CurrentFormat
         $curVideo = $current.VideoFormat
         $curFr = $current.FrameRate
@@ -455,6 +489,12 @@ Run-Step 'DelanCam1 stream test' {
             LastTimestampMs = -1.0
             MaxGapMs = 0.0
             GapsMs = (New-Object System.Collections.Generic.List[double])
+            HashedFrames = 0
+            IdenticalFramePairs = 0
+            LastFrameHash = ''
+            UniqueHashes = (New-Object 'System.Collections.Generic.HashSet[string]')
+            ContentAnalysisErrors = 0
+            LastContentError = ''
             MinFrameBytes = -1
             MaxFrameBytes = 0
             ExpectedIntervalMs = $expectedIntervalMs
@@ -466,6 +506,10 @@ Run-Step 'DelanCam1 stream test' {
         if ($startStatus.ToString() -ne 'Success') {
             throw "MediaFrameReader.StartAsync did not report success (status: $startStatus)."
         }
+
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $contentBuffer = $null
+        $contentBufferSize = 0
 
         # Windows PowerShell cannot subscribe to Windows Runtime events, so the
         # FrameArrived event is unusable here. Poll TryAcquireLatestFrame in a
@@ -520,6 +564,33 @@ Run-Step 'DelanCam1 stream test' {
                             $sizeBytes = [long]($width * $height * $bytesPerPixel)
                             if ($stats.MinFrameBytes -eq -1 -or $sizeBytes -lt $stats.MinFrameBytes) { $stats.MinFrameBytes = $sizeBytes }
                             if ($sizeBytes -gt $stats.MaxFrameBytes) { $stats.MaxFrameBytes = $sizeBytes }
+
+                            if ($vmf -and $vmf.SoftwareBitmap -and $width -gt 0 -and $height -gt 0) {
+                                try {
+                                    $needed = [uint32]($width * $height * 4 + 4096)
+                                    if ($null -eq $contentBuffer -or $contentBufferSize -lt $needed) {
+                                        $contentBuffer = New-Object Windows.Storage.Streams.Buffer $needed
+                                        $contentBufferSize = $needed
+                                    }
+                                    $sb.CopyToBuffer($contentBuffer)
+                                    $frameBytes = [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions]::ToArray($contentBuffer)
+                                    if ($frameBytes.Length -ge ($width * $height)) {
+                                        $frameHash = [BitConverter]::ToString($md5.ComputeHash($frameBytes))
+                                        $stats.HashedFrames++
+                                        if ($stats.LastFrameHash -eq $frameHash) { $stats.IdenticalFramePairs++ }
+                                        $stats.LastFrameHash = $frameHash
+                                        [void]$stats.UniqueHashes.Add($frameHash)
+                                    }
+                                    else {
+                                        $stats.ContentAnalysisErrors++
+                                        $stats.LastContentError = "CopyToBuffer returned only $($frameBytes.Length) bytes for a ${width}x${height} frame."
+                                    }
+                                }
+                                catch {
+                                    $stats.ContentAnalysisErrors++
+                                    $stats.LastContentError = $_.Exception.Message
+                                }
+                            }
                         }
                     }
                     else {
@@ -564,9 +635,12 @@ Run-Step 'DelanCam1 stream test' {
         $script:streamTestTimestampErrors = $stats.TimestampErrors
         $script:streamTestStreamStalls = $stats.StreamStalls
         $script:streamTestGapPattern = $gapPattern
+        $script:streamTestHashedFrames = $stats.HashedFrames
+        $script:streamTestDistinctFrames = $stats.UniqueHashes.Count
+        $script:streamTestIdenticalPairs = $stats.IdenticalFramePairs
 
         $lines.Add('Device opened: YES')
-        $lines.Add("Selected format: $($current.Subtype) (device default/current format, not forced by this tool)")
+        $lines.Add("Selected format: $($current.Subtype) (the camera's current format for this test)")
         $lines.Add("Resolution: $($curVideo.Width)x$($curVideo.Height)")
         $lines.Add("Reported FPS: $curFps")
         $lines.Add("Capture window: ${captureSeconds}s")
@@ -588,6 +662,17 @@ Run-Step 'DelanCam1 stream test' {
         if ($stats.MinFrameBytes -ge 0) {
             $lines.Add("Frame size range (approximate, from pixel format): $($stats.MinFrameBytes) - $($stats.MaxFrameBytes) bytes")
         }
+        if ($stats.HashedFrames -gt 0) {
+            $lines.Add("Frames checksummed in memory: $($stats.HashedFrames)")
+            $lines.Add("Distinct frame contents: $($stats.UniqueHashes.Count)")
+            $lines.Add("Consecutive byte-identical frames: $($stats.IdenticalFramePairs)")
+        }
+        elseif ($stats.FramesArrived -gt 0) {
+            $lines.Add('Frame content could not be checksummed for any frame.')
+        }
+        if ($stats.ContentAnalysisErrors -gt 0) {
+            $lines.Add("Content-analysis errors: $($stats.ContentAnalysisErrors) (last: $($stats.LastContentError))")
+        }
         if ($stats.HandlerErrors -gt 0) {
             $lines.Add("Frame-handling errors: $($stats.HandlerErrors) (last: $($stats.LastHandlerError))")
         }
@@ -601,9 +686,9 @@ Run-Step 'DelanCam1 stream test' {
             $lines.Add('API errors: none')
         }
         $lines.Add('')
-        $lines.Add('Frame content (identical-frame / corruption analysis) is not yet implemented in this version.')
-        $lines.Add('A clean result above shows the capture API delivered frames at the expected rate; it does not by')
-        $lines.Add('itself prove the image content is correct.')
+        $lines.Add('Frame-content analysis is limited to detecting frozen/identical frames via in-memory checksums.')
+        $lines.Add('A clean result above shows the capture API delivered changing frames at the expected rate; it does')
+        $lines.Add('not prove the picture itself looks correct.')
     }
     catch {
         $realEx = $_.Exception
@@ -1027,7 +1112,13 @@ Run-Step 'Diagnostic summary' {
         else {
             $summary.Add('The capture API delivered frames at a steady rate with no stalls. If the client still sees a corrupted image, this points above the raw camera stream, such as application, codec or rendering, rather than DelanCam1 itself.')
         }
-        $summary.Add('This test does not yet analyse frame content, so it cannot rule out a stream that looks technically healthy but is visually corrupted. See stream-test.txt for full detail.')
+        if ($script:streamTestHashedFrames -ge 5 -and $script:streamTestDistinctFrames -eq 1) {
+            $summary.Add('REVIEW HIGH: Every captured frame was byte-identical. The stream appears frozen even though frames keep arriving - this points to sensor, hardware or driver, not the application layer.')
+        }
+        elseif ($script:streamTestIdenticalPairs -gt 0) {
+            $summary.Add("REVIEW: $script:streamTestIdenticalPairs consecutive frame pair(s) had byte-identical content. A live sensor almost never produces identical frames - review together with the other stream metrics.")
+        }
+        $summary.Add('Content analysis flags frozen/identical frames but cannot judge whether a varying image looks correct. See stream-test.txt for full detail.')
     }
 
     $summary.Add('')
@@ -1090,8 +1181,8 @@ Run-Step 'Diagnostic summary' {
 
     $summary.Add('')
     $summary.Add('LIMITATION')
-    $summary.Add('This version opens DelanCam1 and measures whether its video stream delivers frames at a steady rate (see STREAM TEST above and stream-test.txt).')
-    $summary.Add('It does not yet analyse frame content, so a clean stream test does not by itself prove the image is visually correct.')
+    $summary.Add('This version opens DelanCam1, measures whether its video stream delivers frames at a steady rate, and checksums frames in memory to detect a frozen stream (see STREAM TEST above and stream-test.txt).')
+    $summary.Add('Content analysis cannot judge whether a varying image is visually correct.')
     $summary | Set-Content -LiteralPath (Join-Path $work 'SUMMARY.txt') -Encoding UTF8
 }
 

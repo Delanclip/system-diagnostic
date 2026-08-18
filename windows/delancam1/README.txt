@@ -20,9 +20,9 @@ It does not collect Microsoft Defender threat history or antivirus scan contents
 
 It does not install software, replace drivers, stop applications, alter privacy settings, make network connections, send telemetry, upload reports or download code.
 
-It does not save any image, video frame or frame content from the camera. The stream test derives only counts, sizes and timestamps in memory and discards the underlying frame data immediately.
+It does not save any image, video frame or frame content from the camera. The stream test derives only counts, sizes, timestamps and checksums in memory (checksums detect a frozen stream and cannot be turned back into an image) and discards the underlying frame data immediately.
 
-It does collect system-wide names and process IDs of running applications, names/statuses of Windows problem devices, registered antivirus product names, selected Defender status, camera privacy/access records and a technical summary of the DelanCam1 video stream (frame counts, measured frame rate, frame sizes and timestamps). These are needed to identify software, security, privacy and hardware conflicts that may affect camera access.
+It does collect system-wide names and process IDs of running applications, names/statuses of Windows problem devices, registered antivirus product names, selected Defender status, camera privacy/access records and a technical summary of the DelanCam1 video stream (frame counts, measured frame rate, frame sizes, timestamps and frame checksums). These are needed to identify software, security, privacy and hardware conflicts that may affect camera access.
 
 OUTPUT
 The report ZIP contains:
@@ -34,7 +34,7 @@ The report ZIP contains:
 - delancam-driver.txt - driver provider, version, date, INF and signature
 - delancam-pnp.txt - Device Manager/PnP status and error code
 - usb-path.txt - USB parent chain and location paths
-- stream-test.txt - result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format, frame count, measured FPS, zero-length frames, timestamp errors and stream stalls, or the exact Windows error if it could not be opened
+- stream-test.txt - result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS, the settings head tracking uses, when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls and frozen-frame checksum results, or the exact Windows error if it could not be opened
 - problem-devices.txt - system-wide PnP devices with non-zero Windows error codes
 - security-products.txt - antivirus products registered with Windows Security Center
 - defender-status.txt - selected Microsoft Defender protection status
@@ -52,4 +52,4 @@ The report ZIP contains:
 - driver-conflict-hints.txt - present driver records matching libusb, Zadig, WinUSB or APP Mode review terms
 - errors.txt - collection steps that failed, if any
 
-This version detects evidence of likely blockers and conflicts, and also opens DelanCam1 to measure whether its video stream delivers frames at a steady rate. It does not yet analyse frame content, so a clean stream test does not by itself prove the image is visually correct.
+This version detects evidence of likely blockers and conflicts, and also opens DelanCam1 to measure whether its video stream delivers frames at a steady rate and whether frame content changes between captures. It cannot judge whether a changing image looks correct, so a clean stream test does not by itself prove the picture is right.
