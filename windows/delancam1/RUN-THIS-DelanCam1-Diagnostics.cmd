@@ -399,14 +399,21 @@ Run-Step 'DelanCam1 stream test' {
         $settings.StreamingCaptureMode = [Windows.Media.Capture.StreamingCaptureMode]::Video
         Wait-WinRtAction ($mediaCapture.InitializeAsync($settings)) 8000
 
-        $frameSource = $null
-        foreach ($candidate in $mediaCapture.FrameSources.Values) {
-            if ($candidate.Info.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color) {
-                $frameSource = $candidate
-                break
-            }
+        $frameSourceCandidates = @($mediaCapture.FrameSources.Values)
+        $lines.Add("Frame sources exposed by MediaCapture: $($frameSourceCandidates.Count)")
+        foreach ($candidate in $frameSourceCandidates) {
+            $lines.Add("  - SourceKind: $($candidate.Info.SourceKind)")
         }
-        if (-not $frameSource) { throw 'MediaCapture did not expose a color frame source for this device.' }
+
+        $frameSource = $frameSourceCandidates | Where-Object { $_.Info.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color } | Select-Object -First 1
+        $frameSourceSelection = 'Color'
+        if (-not $frameSource -and $frameSourceCandidates.Count -gt 0) {
+            $frameSource = $frameSourceCandidates[0]
+            $frameSourceSelection = "fallback: $($frameSource.Info.SourceKind) (no Color-kind source was exposed)"
+        }
+        if (-not $frameSource) { throw 'MediaCapture did not expose any frame source for this device.' }
+        $lines.Add("Selected frame source: $frameSourceSelection")
+        $lines.Add('')
 
         $lines.Add('Available media types (native formats reported by the device):')
         foreach ($fmt in $frameSource.SupportedFormats) {
