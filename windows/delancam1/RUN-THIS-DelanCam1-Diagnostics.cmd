@@ -9,10 +9,16 @@ echo ============================================================
 echo.
 echo Keep DelanCam1 connected while this tool runs.
 echo.
+echo Close other apps that may use the camera first, such as Windows Camera,
+echo OBS, Teams, Discord or OpenTrack, so the stream test can open DelanCam1
+echo without another app already holding it.
+echo.
 echo This tool collects Windows camera, driver, USB, privacy,
-echo security-product and running-application information.
-echo It does NOT change drivers, install software, record camera images,
-echo upload anything, or make network connections.
+echo security-product and running-application information. It also briefly
+echo opens DelanCam1 to test its video stream, but does NOT save any image
+echo or video data from the camera.
+echo It does NOT change drivers, install software, upload anything, or make
+echo network connections.
 echo.
 echo The report ZIP will be created on your Desktop with a name starting:
 echo SEND-TO-DELANCLIP-DelanCam1-Report-
@@ -149,6 +155,12 @@ Collected:
 - recent Windows camera-access registry history with user profile names redacted
 - recent camera-related Windows event logs and matching application errors
 - recent matching PnP events and SetupAPI excerpts
+- a short native stream test: opens DelanCam1 with Windows camera APIs,
+  requests the 640x480 @ 60 FPS format head tracking uses when available,
+  measures whether frames arrive, how fast, and whether the stream stalls,
+  and checksums frames in memory (plus basic brightness statistics) to tell
+  a frozen stream from a genuinely dark scene, without saving any frame
+  image or video data
 - active power scheme and USB power-policy output when available
 - a short diagnostic summary
 
@@ -290,6 +302,483 @@ Run-Step 'DelanCam1 USB path' {
                 Add-Content -LiteralPath $path -Encoding UTF8
         }
     }
+}
+
+$script:streamTestPerformed = $false
+$script:streamTestOpened = $false
+$script:streamTestFramesReceived = 0
+$script:streamTestAcquisitions = 0
+$script:streamTestMeasuredFps = 0
+$script:streamTestZeroLengthFrames = 0
+$script:streamTestTimestampErrors = 0
+$script:streamTestStreamStalls = 0
+$script:streamTestGapPattern = 'steady'
+$script:streamTestHashedFrames = 0
+$script:streamTestDistinctFrames = 0
+$script:streamTestIdenticalPairs = 0
+$script:streamTestSampleMax = 0
+$script:streamTestPixelFormat = ''
+$script:streamTestStoppedEarly = $false
+$script:streamTestMinorHiccup = $false
+$script:streamTestMaxGapMs = 0
+$script:streamTestApiError = $null
+Run-Step 'DelanCam1 stream test' {
+    $path = Join-Path $work 'stream-test.txt'
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Delanclip DelanCam1 Stream Test')
+    $lines.Add("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
+    $lines.Add('')
+    $lines.Add('This test opens DelanCam1 with built-in Windows camera APIs and reads live')
+    $lines.Add('frames for a few seconds. It records only counts, sizes and timestamps.')
+    $lines.Add('No frame image or video data is written to disk at any point.')
+    $lines.Add('')
+
+    $script:streamTestPerformed = $true
+    $vidPidPattern = '(?i)VID_0120.*PID_1234'
+    $captureSeconds = 5
+
+    function Wait-WinRtOperation {
+        param($WinRtTask, [type]$ResultType, [int]$TimeoutMs = 5000)
+        $methods = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+        }
+        if (-not $methods) { throw 'Could not locate WindowsRuntimeSystemExtensions.AsTask(IAsyncOperation<T>) on this system.' }
+        $asTaskGeneric = $methods[0].MakeGenericMethod($ResultType)
+        $netTask = $asTaskGeneric.Invoke($null, @($WinRtTask))
+        if (-not $netTask.Wait($TimeoutMs)) { throw "Timed out after ${TimeoutMs}ms waiting for a Windows Runtime operation." }
+        return $netTask.Result
+    }
+
+    function Wait-WinRtAction {
+        param($WinRtAction, [int]$TimeoutMs = 5000)
+        $methods = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction'
+        }
+        if (-not $methods) { throw 'Could not locate WindowsRuntimeSystemExtensions.AsTask(IAsyncAction) on this system.' }
+        $netTask = $methods[0].Invoke($null, @($WinRtAction))
+        if (-not $netTask.Wait($TimeoutMs)) { throw "Timed out after ${TimeoutMs}ms waiting for a Windows Runtime operation." }
+    }
+
+    $frameReader = $null
+    $mediaCapture = $null
+
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction Stop
+
+        [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Enumeration.DeviceClass,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Enumeration.DeviceInformationCollection,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameSourceGroup,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameSourceKind,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameReader,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameReaderStartStatus,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCapture,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCaptureInitializationSettings,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCaptureSharingMode,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCaptureMemoryPreference,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.StreamingCaptureMode,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Storage.Streams.Buffer,Windows.Storage.Streams,ContentType=WindowsRuntime] | Out-Null
+
+        $devices = Wait-WinRtOperation ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync([Windows.Devices.Enumeration.DeviceClass]::VideoCapture)) ([Windows.Devices.Enumeration.DeviceInformationCollection]) 5000
+
+        $targetDevice = $devices | Where-Object { $_.Id -match $vidPidPattern } | Select-Object -First 1
+        $targetReason = 'matched known VID/PID (VID_0120&PID_1234)'
+        if (-not $targetDevice) {
+            $targetDevice = $devices | Where-Object { $_.Name -match '(?i)DelanCam' } | Select-Object -First 1
+            $targetReason = 'matched by device name (VID/PID did not match the known-good value)'
+        }
+
+        if (-not $targetDevice) {
+            $lines.Add('Device opened: NO')
+            $lines.Add('Reason: No Windows Runtime video-capture device matched the known DelanCam1 VID/PID or name.')
+            $lines.Add('API errors: none (device not present, stream test not attempted)')
+            $lines | Set-Content -LiteralPath $path -Encoding UTF8
+            return
+        }
+
+        $lines.Add("Target device: $($targetDevice.Name)")
+        $lines.Add("Target device Id: $($targetDevice.Id)")
+        $lines.Add("Target selection: $targetReason")
+        $lines.Add('')
+
+        $group = Wait-WinRtOperation ([Windows.Media.Capture.Frames.MediaFrameSourceGroup]::FromIdAsync($targetDevice.Id)) ([Windows.Media.Capture.Frames.MediaFrameSourceGroup]) 5000
+        if (-not $group) { throw "No MediaFrameSourceGroup was found for device Id $($targetDevice.Id)." }
+
+        $mediaCapture = New-Object Windows.Media.Capture.MediaCapture
+        $settings = New-Object Windows.Media.Capture.MediaCaptureInitializationSettings
+        $settings.SourceGroup = $group
+        $settings.SharingMode = [Windows.Media.Capture.MediaCaptureSharingMode]::ExclusiveControl
+        $settings.MemoryPreference = [Windows.Media.Capture.MediaCaptureMemoryPreference]::Cpu
+        $settings.StreamingCaptureMode = [Windows.Media.Capture.StreamingCaptureMode]::Video
+        Wait-WinRtAction ($mediaCapture.InitializeAsync($settings)) 8000
+
+        $sourceInfos = @($group.SourceInfos)
+        $lines.Add("Frame sources exposed by MediaFrameSourceGroup: $($sourceInfos.Count)")
+        foreach ($info in $sourceInfos) {
+            $lines.Add("  - SourceKind: $($info.SourceKind), Id: $($info.Id)")
+        }
+
+        $chosenInfo = $sourceInfos | Where-Object { $_.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color } | Select-Object -First 1
+        $frameSourceSelection = 'Color'
+        if (-not $chosenInfo -and $sourceInfos.Count -gt 0) {
+            $chosenInfo = $sourceInfos[0]
+            $frameSourceSelection = "fallback: $($chosenInfo.SourceKind) (no Color-kind source was exposed)"
+        }
+        if (-not $chosenInfo) { throw 'MediaFrameSourceGroup exposed no source infos for this device.' }
+
+        $framePairs = @($mediaCapture.FrameSources)
+        $frameSource = $null
+        foreach ($pair in $framePairs) {
+            if ([string]$pair.Key -eq [string]$chosenInfo.Id) { $frameSource = $pair.Value; break }
+        }
+        if (-not $frameSource -and $framePairs.Count -gt 0) { $frameSource = $framePairs[0].Value }
+        if (-not $frameSource) { throw "MediaCapture did not expose a usable frame source (entries: $($framePairs.Count))." }
+        $lines.Add("Selected frame source: $frameSourceSelection")
+        $lines.Add('')
+
+        $lines.Add('Available media types (native formats reported by the device):')
+        foreach ($fmt in $frameSource.SupportedFormats) {
+            $vfmt = $fmt.VideoFormat
+            $fr = $fmt.FrameRate
+            $fps = 0
+            if ($fr -and $fr.Denominator -ne 0) { $fps = [math]::Round($fr.Numerator / $fr.Denominator, 2) }
+            $lines.Add("  - $($fmt.Subtype) $($vfmt.Width)x$($vfmt.Height) @ ${fps}fps")
+        }
+        $lines.Add('')
+
+        $requestedFormat = $null
+        foreach ($subtypePref in @('MJPG','NV12','YUY2')) {
+            foreach ($fmt in $frameSource.SupportedFormats) {
+                $vf = $fmt.VideoFormat
+                $fr = $fmt.FrameRate
+                $fmtFps = 0
+                if ($fr -and $fr.Denominator -ne 0) { $fmtFps = $fr.Numerator / $fr.Denominator }
+                if ($vf.Width -eq 640 -and $vf.Height -eq 480 -and [math]::Round($fmtFps) -eq 60 -and $fmt.Subtype -eq $subtypePref) {
+                    $requestedFormat = $fmt
+                    break
+                }
+            }
+            if ($requestedFormat) { break }
+        }
+        if ($requestedFormat) {
+            try {
+                Wait-WinRtAction ($frameSource.SetFormatAsync($requestedFormat)) 5000
+                $lines.Add("Requested format: $($requestedFormat.Subtype) 640x480 @ 60fps (the settings OpenTrack uses) - set successfully")
+            }
+            catch {
+                $lines.Add("Requested format: $($requestedFormat.Subtype) 640x480 @ 60fps could not be set ($($_.Exception.Message)); continuing with the device default format")
+            }
+        }
+        else {
+            $lines.Add('Requested format: 640x480 @ 60fps is not in the supported format list; continuing with the device default format')
+        }
+        $lines.Add('')
+
+        $current = $frameSource.CurrentFormat
+        $curVideo = $current.VideoFormat
+        $curFr = $current.FrameRate
+        $curFps = 0
+        if ($curFr -and $curFr.Denominator -ne 0) { $curFps = [math]::Round($curFr.Numerator / $curFr.Denominator, 2) }
+        $expectedIntervalMs = 33.3
+        if ($curFps -gt 0) { $expectedIntervalMs = 1000.0 / $curFps }
+
+        $stats = @{
+            FramesArrived = 0
+            Acquisitions = 0
+            ZeroLengthFrames = 0
+            TimestampErrors = 0
+            MissingTimestamps = 0
+            StreamStalls = 0
+            HandlerErrors = 0
+            LastHandlerError = ''
+            FirstTimestampMs = -1.0
+            LastTimestampMs = -1.0
+            MaxGapMs = 0.0
+            GapsMs = (New-Object System.Collections.Generic.List[double])
+            HashedFrames = 0
+            IdenticalFramePairs = 0
+            LastFrameHash = ''
+            UniqueHashes = (New-Object 'System.Collections.Generic.HashSet[string]')
+            ContentAnalysisErrors = 0
+            LastContentError = ''
+            SampledFrames = 0
+            SampleByteMin = 255
+            SampleByteMax = 0
+            SampleByteMeanSum = 0.0
+            UvMeanSum = 0.0
+            UvSamples = 0
+            PixelFormatName = ''
+            MinFrameBytes = -1
+            MaxFrameBytes = 0
+            ExpectedIntervalMs = $expectedIntervalMs
+        }
+
+        $frameReader = Wait-WinRtOperation ($mediaCapture.CreateFrameReaderAsync($frameSource)) ([Windows.Media.Capture.Frames.MediaFrameReader]) 8000
+
+        $startStatus = Wait-WinRtOperation ($frameReader.StartAsync()) ([Windows.Media.Capture.Frames.MediaFrameReaderStartStatus]) 8000
+        if ($startStatus.ToString() -ne 'Success') {
+            throw "MediaFrameReader.StartAsync did not report success (status: $startStatus)."
+        }
+
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $contentBuffer = $null
+        $contentBufferSize = 0
+        $loopStartWall = [DateTime]::UtcNow
+        $firstFrameWall = $null
+        $lastFrameWall = $null
+
+        # Windows PowerShell cannot subscribe to Windows Runtime events, so the
+        # FrameArrived event is unusable here. Poll TryAcquireLatestFrame in a
+        # tight loop instead and treat a changed SystemRelativeTime as a new frame.
+        $deadline = [DateTime]::UtcNow.AddSeconds($captureSeconds)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $frame = $null
+            try {
+                $frame = $frameReader.TryAcquireLatestFrame()
+                if ($null -ne $frame) {
+                    $stats.Acquisitions++
+                    $tsRaw = $frame.SystemRelativeTime
+                    $tsMs = $null
+                    if ($tsRaw -is [TimeSpan]) { $tsMs = $tsRaw.TotalMilliseconds }
+                    elseif ($null -ne $tsRaw) {
+                        try { $tsMs = ([TimeSpan]$tsRaw.Value).TotalMilliseconds }
+                        catch { try { $tsMs = ([TimeSpan]$tsRaw).TotalMilliseconds } catch {} }
+                    }
+                    if ($null -ne $tsMs) {
+                        if ($tsMs -ne $stats.LastTimestampMs) {
+                            $stats.FramesArrived++
+                            if ($null -eq $firstFrameWall) { $firstFrameWall = [DateTime]::UtcNow }
+                            $lastFrameWall = [DateTime]::UtcNow
+                            if ($stats.LastTimestampMs -ge 0) {
+                                $delta = $tsMs - $stats.LastTimestampMs
+                                if ($delta -le 0) { $stats.TimestampErrors++ }
+                                elseif ($stats.ExpectedIntervalMs -gt 0 -and $delta -gt ($stats.ExpectedIntervalMs * 4)) { $stats.StreamStalls++ }
+                                if ($delta -gt $stats.MaxGapMs) { $stats.MaxGapMs = $delta }
+                                if ($delta -gt 0) { $stats.GapsMs.Add($delta) }
+                            }
+                            if ($stats.FirstTimestampMs -lt 0) { $stats.FirstTimestampMs = $tsMs }
+                            $stats.LastTimestampMs = $tsMs
+
+                            $width = 0
+                            $height = 0
+                            $bytesPerPixel = 0
+                            $vmf = $frame.VideoMediaFrame
+                            if ($vmf -and $vmf.SoftwareBitmap) {
+                                $sb = $vmf.SoftwareBitmap
+                                $width = $sb.PixelWidth
+                                $height = $sb.PixelHeight
+                                switch ($sb.BitmapPixelFormat.ToString()) {
+                                    'Yuy2'   { $bytesPerPixel = 2 }
+                                    'Nv12'   { $bytesPerPixel = 1.5 }
+                                    'Bgra8'  { $bytesPerPixel = 4 }
+                                    'Rgba8'  { $bytesPerPixel = 4 }
+                                    'Rgba16' { $bytesPerPixel = 8 }
+                                    'Gray8'  { $bytesPerPixel = 1 }
+                                    'Gray16' { $bytesPerPixel = 2 }
+                                    default  { $bytesPerPixel = 0 }
+                                }
+                            }
+                            if ($width -le 0 -or $height -le 0) { $stats.ZeroLengthFrames++ }
+                            $sizeBytes = [long]($width * $height * $bytesPerPixel)
+                            if ($stats.MinFrameBytes -eq -1 -or $sizeBytes -lt $stats.MinFrameBytes) { $stats.MinFrameBytes = $sizeBytes }
+                            if ($sizeBytes -gt $stats.MaxFrameBytes) { $stats.MaxFrameBytes = $sizeBytes }
+
+                            if ($vmf -and $vmf.SoftwareBitmap -and $width -gt 0 -and $height -gt 0) {
+                                try {
+                                    $needed = [uint32]($width * $height * 4 + 4096)
+                                    if ($null -eq $contentBuffer -or $contentBufferSize -lt $needed) {
+                                        $contentBuffer = New-Object Windows.Storage.Streams.Buffer $needed
+                                        $contentBufferSize = $needed
+                                    }
+                                    $sb.CopyToBuffer($contentBuffer)
+                                    $frameBytes = [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions]::ToArray($contentBuffer)
+                                    if ($frameBytes.Length -ge ($width * $height)) {
+                                        $frameHash = [BitConverter]::ToString($md5.ComputeHash($frameBytes))
+                                        $stats.HashedFrames++
+                                        if ($stats.LastFrameHash -eq $frameHash) { $stats.IdenticalFramePairs++ }
+                                        $stats.LastFrameHash = $frameHash
+                                        [void]$stats.UniqueHashes.Add($frameHash)
+
+                                        if ($stats.HashedFrames -eq 1 -or ($stats.HashedFrames % 25) -eq 0) {
+                                            $stats.PixelFormatName = $sb.BitmapPixelFormat.ToString()
+                                            $sampleLen = [Math]::Min(32768, $frameBytes.Length)
+                                            $byteSample = [int[]]($frameBytes[0..($sampleLen - 1)])
+                                            $sMin = [System.Linq.Enumerable]::Min($byteSample)
+                                            $sMax = [System.Linq.Enumerable]::Max($byteSample)
+                                            if ($sMin -lt $stats.SampleByteMin) { $stats.SampleByteMin = $sMin }
+                                            if ($sMax -gt $stats.SampleByteMax) { $stats.SampleByteMax = $sMax }
+                                            $stats.SampleByteMeanSum += [System.Linq.Enumerable]::Average($byteSample)
+                                            $stats.SampledFrames++
+                                            if ($stats.PixelFormatName -eq 'Nv12') {
+                                                $uvStart = $width * $height
+                                                if ($frameBytes.Length -ge ($uvStart + 1024)) {
+                                                    $uvLen = [Math]::Min(32768, $frameBytes.Length - $uvStart)
+                                                    $uvSample = [int[]]($frameBytes[$uvStart..($uvStart + $uvLen - 1)])
+                                                    $stats.UvMeanSum += [System.Linq.Enumerable]::Average($uvSample)
+                                                    $stats.UvSamples++
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else {
+                                        $stats.ContentAnalysisErrors++
+                                        $stats.LastContentError = "CopyToBuffer returned only $($frameBytes.Length) bytes for a ${width}x${height} frame."
+                                    }
+                                }
+                                catch {
+                                    $stats.ContentAnalysisErrors++
+                                    $stats.LastContentError = $_.Exception.Message
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        $stats.MissingTimestamps++
+                    }
+                }
+            }
+            catch {
+                $stats.HandlerErrors++
+                $stats.LastHandlerError = $_.Exception.Message
+            }
+            finally {
+                if ($null -ne $frame) { try { $frame.Dispose() } catch {} }
+            }
+            Start-Sleep -Milliseconds 2
+        }
+
+        $loopEndWall = [DateTime]::UtcNow
+        try { Wait-WinRtAction ($frameReader.StopAsync()) 5000 } catch {}
+
+        $measuredFps = 0
+        if ($stats.FramesArrived -ge 2 -and $stats.LastTimestampMs -gt $stats.FirstTimestampMs) {
+            $elapsedSeconds = ($stats.LastTimestampMs - $stats.FirstTimestampMs) / 1000.0
+            if ($elapsedSeconds -gt 0) { $measuredFps = [math]::Round(($stats.FramesArrived - 1) / $elapsedSeconds, 2) }
+        }
+
+        $medianGapMs = 0
+        if ($stats.GapsMs.Count -gt 0) {
+            $sortedGaps = @($stats.GapsMs | Sort-Object)
+            $medianGapMs = [math]::Round([double]$sortedGaps[[int][math]::Floor($sortedGaps.Count / 2)], 1)
+        }
+        $gapPattern = 'steady'
+        if ($stats.StreamStalls -gt 0) {
+            if ($medianGapMs -gt 0 -and $stats.MaxGapMs -le (1.6 * $medianGapMs)) { $gapPattern = 'uniform-slow' }
+            else { $gapPattern = 'irregular' }
+        }
+
+        $firstFrameDelayMs = -1
+        $tailSilenceMs = -1
+        if ($null -ne $firstFrameWall) { $firstFrameDelayMs = [math]::Round(($firstFrameWall - $loopStartWall).TotalMilliseconds, 0) }
+        if ($null -ne $lastFrameWall) { $tailSilenceMs = [math]::Round(($loopEndWall - $lastFrameWall).TotalMilliseconds, 0) }
+        $streamStopped = $false
+        if ($stats.FramesArrived -gt 0 -and $tailSilenceMs -gt [math]::Max(1000, ($stats.ExpectedIntervalMs * 10))) { $streamStopped = $true }
+        $minorHiccup = $false
+        if ($stats.StreamStalls -gt 0 -and $stats.StreamStalls -le 2 -and $stats.MaxGapMs -le 150 -and (-not $streamStopped) -and ($curFps -le 0 -or $measuredFps -ge (0.8 * $curFps))) { $minorHiccup = $true }
+
+        $script:streamTestOpened = $true
+        $script:streamTestFramesReceived = $stats.FramesArrived
+        $script:streamTestAcquisitions = $stats.Acquisitions
+        $script:streamTestMeasuredFps = $measuredFps
+        $script:streamTestZeroLengthFrames = $stats.ZeroLengthFrames
+        $script:streamTestTimestampErrors = $stats.TimestampErrors
+        $script:streamTestStreamStalls = $stats.StreamStalls
+        $script:streamTestGapPattern = $gapPattern
+        $script:streamTestHashedFrames = $stats.HashedFrames
+        $script:streamTestDistinctFrames = $stats.UniqueHashes.Count
+        $script:streamTestIdenticalPairs = $stats.IdenticalFramePairs
+        $script:streamTestSampleMax = $stats.SampleByteMax
+        $script:streamTestPixelFormat = $stats.PixelFormatName
+        $script:streamTestStoppedEarly = $streamStopped
+        $script:streamTestMinorHiccup = $minorHiccup
+        $script:streamTestMaxGapMs = [math]::Round($stats.MaxGapMs, 0)
+
+        $lines.Add('Device opened: YES')
+        $lines.Add("Selected format: $($current.Subtype) (the camera's current format for this test)")
+        $lines.Add("Resolution: $($curVideo.Width)x$($curVideo.Height)")
+        $lines.Add("Reported FPS: $curFps")
+        $lines.Add("Capture window: ${captureSeconds}s")
+        $lines.Add("Frames received: $($stats.FramesArrived)")
+        $lines.Add("Frame acquisitions (including repeats of the same frame): $($stats.Acquisitions)")
+        $lines.Add("Measured FPS: $measuredFps")
+        $lines.Add("Zero-length frames: $($stats.ZeroLengthFrames)")
+        $lines.Add("Timestamp errors: $($stats.TimestampErrors)")
+        $lines.Add("Frames without a usable timestamp: $($stats.MissingTimestamps)")
+        $lines.Add("Stream stalls (gap > 4x expected frame interval): $($stats.StreamStalls)")
+        $lines.Add("Largest frame-to-frame gap: $([math]::Round($stats.MaxGapMs, 1)) ms")
+        $lines.Add("Median frame-to-frame gap: $medianGapMs ms")
+        if ($firstFrameDelayMs -ge 0) { $lines.Add("First frame arrived: $firstFrameDelayMs ms after capture start") }
+        if ($tailSilenceMs -ge 0) { $lines.Add("Silence after the last frame: $tailSilenceMs ms of the capture window") }
+        if ($streamStopped) {
+            $lines.Add('Note: the stream stopped delivering frames well before the end of the capture window. Security')
+            $lines.Add('software with webcam-protection features can cut a camera stream mid-use; USB or driver faults')
+            $lines.Add('can too. Compare with the installed security products in this report.')
+        }
+        if ($gapPattern -eq 'uniform-slow') {
+            $lines.Add('Note: frame spacing is uniform rather than bursty. A uniformly slow frame rate is typical of')
+            $lines.Add('auto-exposure lengthening exposure time when the scene appears dark to the camera, and is not')
+            $lines.Add('by itself evidence of a USB or hardware fault.')
+        }
+        if ($minorHiccup) {
+            $lines.Add('Note: the recorded stall(s) are brief and the overall frame rate is healthy. This is treated as')
+            $lines.Add('normal system-load jitter, not a transport fault.')
+        }
+        if ($stats.MinFrameBytes -ge 0) {
+            $lines.Add("Frame size range (approximate, from pixel format): $($stats.MinFrameBytes) - $($stats.MaxFrameBytes) bytes")
+        }
+        if ($stats.HashedFrames -gt 0) {
+            $lines.Add("Frames checksummed in memory: $($stats.HashedFrames)")
+            $lines.Add("Distinct frame contents: $($stats.UniqueHashes.Count)")
+            $lines.Add("Consecutive byte-identical frames: $($stats.IdenticalFramePairs)")
+            if ($stats.SampledFrames -gt 0) {
+                $sampleMean = [math]::Round($stats.SampleByteMeanSum / $stats.SampledFrames, 1)
+                $lines.Add("Frame-start byte sample ($($stats.PixelFormatName)): min $($stats.SampleByteMin), max $($stats.SampleByteMax), mean $sampleMean across $($stats.SampledFrames) sampled frame(s)")
+                if ($stats.UvSamples -gt 0) {
+                    $uvMean = [math]::Round($stats.UvMeanSum / $stats.UvSamples, 1)
+                    $lines.Add("Chroma-plane sample mean: $uvMean (neutral grey chroma is 128)")
+                }
+            }
+        }
+        elseif ($stats.FramesArrived -gt 0) {
+            $lines.Add('Frame content could not be checksummed for any frame.')
+        }
+        if ($stats.ContentAnalysisErrors -gt 0) {
+            $lines.Add("Content-analysis errors: $($stats.ContentAnalysisErrors) (last: $($stats.LastContentError))")
+        }
+        if ($stats.HandlerErrors -gt 0) {
+            $lines.Add("Frame-handling errors: $($stats.HandlerErrors) (last: $($stats.LastHandlerError))")
+        }
+        if ($stats.FramesArrived -eq 0 -and $stats.Acquisitions -gt 0) {
+            $lines.Add('API errors: none (frames were acquired, but none carried a usable timestamp, so rate metrics could not be measured)')
+        }
+        elseif ($stats.FramesArrived -eq 0) {
+            $lines.Add('API errors: none (device opened and stream started, but no frames arrived in the capture window)')
+        }
+        else {
+            $lines.Add('API errors: none')
+        }
+        $lines.Add('')
+        $lines.Add('Frame-content analysis is limited to detecting frozen/identical frames via in-memory checksums.')
+        $lines.Add('A clean result above shows the capture API delivered changing frames at the expected rate; it does')
+        $lines.Add('not prove the picture itself looks correct.')
+    }
+    catch {
+        $realEx = $_.Exception
+        while ($realEx.InnerException) { $realEx = $realEx.InnerException }
+        $hresultText = ''
+        try { $hresultText = ' (HRESULT: 0x{0:X8})' -f $realEx.HResult } catch {}
+        $script:streamTestOpened = $false
+        $script:streamTestApiError = $realEx.Message
+        $lines.Add('Device opened: NO')
+        $lines.Add("API errors: $($realEx.Message)$hresultText")
+        Record-Error -Step 'DelanCam1 stream test' -Err $_
+    }
+    finally {
+        if ($frameReader) { try { $frameReader.Dispose() } catch {} }
+        if ($mediaCapture) { try { $mediaCapture.Dispose() } catch {} }
+    }
+
+    $lines | Set-Content -LiteralPath $path -Encoding UTF8
 }
 
 $script:problemDevices = @()
@@ -667,6 +1156,55 @@ Run-Step 'Diagnostic summary' {
     }
 
     $summary.Add('')
+    $summary.Add('STREAM TEST')
+    if (-not $script:streamTestPerformed) {
+        $summary.Add('Stream test was not attempted. See stream-test.txt.')
+    }
+    elseif (-not $script:streamTestOpened) {
+        $summary.Add("REVIEW: DelanCam1 could not be opened for the stream test: $script:streamTestApiError")
+        $summary.Add('This points to camera privacy/policy, another application holding the camera, or a driver problem, not necessarily a hardware fault. See stream-test.txt for the exact error.')
+    }
+    else {
+        $summary.Add("Frames received: $script:streamTestFramesReceived in the capture window. Measured FPS: $script:streamTestMeasuredFps.")
+        if ($script:streamTestFramesReceived -eq 0 -and $script:streamTestAcquisitions -gt 0) {
+            $summary.Add('REVIEW: DelanCam1 delivered frames, but none carried a usable timestamp, so frame-rate metrics could not be measured. See stream-test.txt.')
+        }
+        elseif ($script:streamTestFramesReceived -eq 0) {
+            $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer.')
+        }
+        elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestGapPattern -eq 'uniform-slow') {
+            $summary.Add('INFO: Frames arrived slower than the nominal FPS but with uniform spacing - consistent with auto-exposure in a scene that appears dark to this IR tracking camera, not with a transport fault. See stream-test.txt.')
+        }
+        elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestMinorHiccup) {
+            $summary.Add("INFO: $script:streamTestStreamStalls brief frame-delivery hiccup(s) (largest gap $script:streamTestMaxGapMs ms) in an otherwise steady stream - common under normal system load, not treated as a fault.")
+        }
+        elseif ($script:streamTestStreamStalls -gt 0) {
+            $summary.Add("REVIEW: The stream stalled $script:streamTestStreamStalls time(s) during the test with irregular frame spacing. This points to USB, driver or hardware rather than the application layer.")
+        }
+        elseif ($script:streamTestZeroLengthFrames -gt 0) {
+            $summary.Add("REVIEW: $script:streamTestZeroLengthFrames received frame(s) reported zero width or height.")
+        }
+        else {
+            $summary.Add('The capture API delivered frames at a steady rate with no stalls. If the client still sees a corrupted image, this points above the raw camera stream, such as application, codec or rendering, rather than DelanCam1 itself.')
+        }
+        if ($script:streamTestHashedFrames -ge 5 -and $script:streamTestDistinctFrames -eq 1) {
+            if ($script:streamTestPixelFormat -eq 'Nv12' -and $script:streamTestSampleMax -le 40) {
+                $summary.Add('INFO: All captured frames were byte-identical and essentially black. An IR tracking camera looking at a scene with nothing bright in it can legitimately produce an unchanging black image, so this alone is not treated as a fault. Pointing any light or IR source at the camera and re-running gives a definitive frozen-vs-dark answer.')
+            }
+            else {
+                $summary.Add('REVIEW HIGH: Every captured frame was byte-identical while containing non-black detail. The stream appears frozen even though frames keep arriving - this points to sensor, hardware or driver, not the application layer.')
+            }
+        }
+        elseif ($script:streamTestIdenticalPairs -gt 0) {
+            $summary.Add("REVIEW: $script:streamTestIdenticalPairs consecutive frame pair(s) had byte-identical content. A live sensor almost never produces identical frames - review together with the other stream metrics.")
+        }
+        if ($script:streamTestStoppedEarly) {
+            $summary.Add('REVIEW: The stream stopped delivering frames well before the end of the capture window. Webcam-protection features in security software can cut camera streams mid-use; USB or driver faults can too. Compare with the security products listed below.')
+        }
+        $summary.Add('Content analysis flags frozen/identical frames but cannot judge whether a varying image looks correct. See stream-test.txt for full detail.')
+    }
+
+    $summary.Add('')
     $summary.Add('CAMERA ACCESS / PRIVACY')
     if ($script:cameraPolicy -and $script:cameraPolicy.LetAppsAccessCamera -eq 2) {
         $summary.Add('REVIEW HIGH: Windows policy is configured to force-deny camera access to apps.')
@@ -726,7 +1264,8 @@ Run-Step 'Diagnostic summary' {
 
     $summary.Add('')
     $summary.Add('LIMITATION')
-    $summary.Add('This version detects evidence of likely blockers and conflicts but does not yet prove stream health by opening DelanCam1 itself.')
+    $summary.Add('This version opens DelanCam1, measures whether its video stream delivers frames at a steady rate, and checksums frames in memory to detect a frozen stream (see STREAM TEST above and stream-test.txt).')
+    $summary.Add('Content analysis cannot judge whether a varying image is visually correct.')
     $summary | Set-Content -LiteralPath (Join-Path $work 'SUMMARY.txt') -Encoding UTF8
 }
 
