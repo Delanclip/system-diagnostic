@@ -348,7 +348,6 @@ Run-Step 'DelanCam1 stream test' {
 
     $frameReader = $null
     $mediaCapture = $null
-    $subId = $null
 
     try {
         Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction Stop
@@ -441,7 +440,7 @@ Run-Step 'DelanCam1 stream test' {
         $expectedIntervalMs = 33.3
         if ($curFps -gt 0) { $expectedIntervalMs = 1000.0 / $curFps }
 
-        $stats = [hashtable]::Synchronized(@{
+        $stats = @{
             FramesArrived = 0
             ZeroLengthFrames = 0
             TimestampErrors = 0
@@ -455,78 +454,79 @@ Run-Step 'DelanCam1 stream test' {
             MinFrameBytes = -1
             MaxFrameBytes = 0
             ExpectedIntervalMs = $expectedIntervalMs
-        })
+        }
 
         $frameReader = Wait-WinRtOperation ($mediaCapture.CreateFrameReaderAsync($frameSource)) ([Windows.Media.Capture.Frames.MediaFrameReader]) 8000
-
-        $subId = 'DelanCamStreamTest-' + [guid]::NewGuid().ToString('N')
-        Register-ObjectEvent -InputObject $frameReader -EventName FrameArrived -SourceIdentifier $subId -MessageData $stats -Action {
-            $s = $Event.MessageData
-            try {
-                $frame = $Event.Sender.TryAcquireLatestFrame()
-                if ($null -eq $frame) { return }
-                try {
-                    $s.FramesArrived++
-                    $width = 0
-                    $height = 0
-                    $bytesPerPixel = 0
-                    $vmf = $frame.VideoMediaFrame
-                    if ($vmf -and $vmf.SoftwareBitmap) {
-                        $sb = $vmf.SoftwareBitmap
-                        $width = $sb.PixelWidth
-                        $height = $sb.PixelHeight
-                        switch ($sb.BitmapPixelFormat.ToString()) {
-                            'Yuy2'   { $bytesPerPixel = 2 }
-                            'Nv12'   { $bytesPerPixel = 1.5 }
-                            'Bgra8'  { $bytesPerPixel = 4 }
-                            'Rgba8'  { $bytesPerPixel = 4 }
-                            'Rgba16' { $bytesPerPixel = 8 }
-                            'Gray8'  { $bytesPerPixel = 1 }
-                            'Gray16' { $bytesPerPixel = 2 }
-                            default  { $bytesPerPixel = 0 }
-                        }
-                    }
-                    if ($width -le 0 -or $height -le 0) { $s.ZeroLengthFrames++ }
-                    $sizeBytes = [long]($width * $height * $bytesPerPixel)
-                    if ($s.MinFrameBytes -eq -1 -or $sizeBytes -lt $s.MinFrameBytes) { $s.MinFrameBytes = $sizeBytes }
-                    if ($sizeBytes -gt $s.MaxFrameBytes) { $s.MaxFrameBytes = $sizeBytes }
-
-                    $tsValue = $frame.SystemRelativeTime
-                    if ($tsValue.HasValue) {
-                        $tsMs = $tsValue.Value.TotalMilliseconds
-                        if ($s.LastTimestampMs -ge 0) {
-                            $delta = $tsMs - $s.LastTimestampMs
-                            if ($delta -le 0) { $s.TimestampErrors++ }
-                            elseif ($s.ExpectedIntervalMs -gt 0 -and $delta -gt ($s.ExpectedIntervalMs * 4)) { $s.StreamStalls++ }
-                            if ($delta -gt $s.MaxGapMs) { $s.MaxGapMs = $delta }
-                        }
-                        if ($s.FirstTimestampMs -lt 0) { $s.FirstTimestampMs = $tsMs }
-                        $s.LastTimestampMs = $tsMs
-                    }
-                    else {
-                        $s.MissingTimestamps++
-                    }
-                }
-                finally {
-                    $frame.Dispose()
-                }
-            }
-            catch {
-                $s.HandlerErrors++
-                $s.LastHandlerError = $_.Exception.Message
-            }
-        } | Out-Null
 
         $startStatus = Wait-WinRtOperation ($frameReader.StartAsync()) ([Windows.Media.Capture.Frames.MediaFrameReaderStartStatus]) 8000
         if ($startStatus.ToString() -ne 'Success') {
             throw "MediaFrameReader.StartAsync did not report success (status: $startStatus)."
         }
 
-        Start-Sleep -Seconds $captureSeconds
+        # Windows PowerShell cannot subscribe to Windows Runtime events, so the
+        # FrameArrived event is unusable here. Poll TryAcquireLatestFrame in a
+        # tight loop instead and treat a changed SystemRelativeTime as a new frame.
+        $deadline = [DateTime]::UtcNow.AddSeconds($captureSeconds)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $frame = $null
+            try {
+                $frame = $frameReader.TryAcquireLatestFrame()
+                if ($null -ne $frame) {
+                    $tsValue = $frame.SystemRelativeTime
+                    if ($tsValue.HasValue) {
+                        $tsMs = $tsValue.Value.TotalMilliseconds
+                        if ($tsMs -ne $stats.LastTimestampMs) {
+                            $stats.FramesArrived++
+                            if ($stats.LastTimestampMs -ge 0) {
+                                $delta = $tsMs - $stats.LastTimestampMs
+                                if ($delta -le 0) { $stats.TimestampErrors++ }
+                                elseif ($stats.ExpectedIntervalMs -gt 0 -and $delta -gt ($stats.ExpectedIntervalMs * 4)) { $stats.StreamStalls++ }
+                                if ($delta -gt $stats.MaxGapMs) { $stats.MaxGapMs = $delta }
+                            }
+                            if ($stats.FirstTimestampMs -lt 0) { $stats.FirstTimestampMs = $tsMs }
+                            $stats.LastTimestampMs = $tsMs
+
+                            $width = 0
+                            $height = 0
+                            $bytesPerPixel = 0
+                            $vmf = $frame.VideoMediaFrame
+                            if ($vmf -and $vmf.SoftwareBitmap) {
+                                $sb = $vmf.SoftwareBitmap
+                                $width = $sb.PixelWidth
+                                $height = $sb.PixelHeight
+                                switch ($sb.BitmapPixelFormat.ToString()) {
+                                    'Yuy2'   { $bytesPerPixel = 2 }
+                                    'Nv12'   { $bytesPerPixel = 1.5 }
+                                    'Bgra8'  { $bytesPerPixel = 4 }
+                                    'Rgba8'  { $bytesPerPixel = 4 }
+                                    'Rgba16' { $bytesPerPixel = 8 }
+                                    'Gray8'  { $bytesPerPixel = 1 }
+                                    'Gray16' { $bytesPerPixel = 2 }
+                                    default  { $bytesPerPixel = 0 }
+                                }
+                            }
+                            if ($width -le 0 -or $height -le 0) { $stats.ZeroLengthFrames++ }
+                            $sizeBytes = [long]($width * $height * $bytesPerPixel)
+                            if ($stats.MinFrameBytes -eq -1 -or $sizeBytes -lt $stats.MinFrameBytes) { $stats.MinFrameBytes = $sizeBytes }
+                            if ($sizeBytes -gt $stats.MaxFrameBytes) { $stats.MaxFrameBytes = $sizeBytes }
+                        }
+                    }
+                    else {
+                        $stats.MissingTimestamps++
+                    }
+                }
+            }
+            catch {
+                $stats.HandlerErrors++
+                $stats.LastHandlerError = $_.Exception.Message
+            }
+            finally {
+                if ($null -ne $frame) { try { $frame.Dispose() } catch {} }
+            }
+            Start-Sleep -Milliseconds 2
+        }
 
         try { Wait-WinRtAction ($frameReader.StopAsync()) 5000 } catch {}
-        Unregister-Event -SourceIdentifier $subId -ErrorAction SilentlyContinue
-        $subId = $null
 
         $measuredFps = 0
         if ($stats.FramesArrived -ge 2 -and $stats.LastTimestampMs -gt $stats.FirstTimestampMs) {
@@ -582,7 +582,6 @@ Run-Step 'DelanCam1 stream test' {
         Record-Error -Step 'DelanCam1 stream test' -Err $_
     }
     finally {
-        if ($subId) { Unregister-Event -SourceIdentifier $subId -ErrorAction SilentlyContinue }
         if ($frameReader) { try { $frameReader.Dispose() } catch {} }
         if ($mediaCapture) { try { $mediaCapture.Dispose() } catch {} }
     }
