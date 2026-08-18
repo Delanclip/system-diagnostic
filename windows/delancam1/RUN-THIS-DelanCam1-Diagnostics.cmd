@@ -304,6 +304,7 @@ Run-Step 'DelanCam1 USB path' {
 $script:streamTestPerformed = $false
 $script:streamTestOpened = $false
 $script:streamTestFramesReceived = 0
+$script:streamTestAcquisitions = 0
 $script:streamTestMeasuredFps = 0
 $script:streamTestZeroLengthFrames = 0
 $script:streamTestTimestampErrors = 0
@@ -442,6 +443,7 @@ Run-Step 'DelanCam1 stream test' {
 
         $stats = @{
             FramesArrived = 0
+            Acquisitions = 0
             ZeroLengthFrames = 0
             TimestampErrors = 0
             MissingTimestamps = 0
@@ -472,9 +474,15 @@ Run-Step 'DelanCam1 stream test' {
             try {
                 $frame = $frameReader.TryAcquireLatestFrame()
                 if ($null -ne $frame) {
-                    $tsValue = $frame.SystemRelativeTime
-                    if ($tsValue.HasValue) {
-                        $tsMs = $tsValue.Value.TotalMilliseconds
+                    $stats.Acquisitions++
+                    $tsRaw = $frame.SystemRelativeTime
+                    $tsMs = $null
+                    if ($tsRaw -is [TimeSpan]) { $tsMs = $tsRaw.TotalMilliseconds }
+                    elseif ($null -ne $tsRaw) {
+                        try { $tsMs = ([TimeSpan]$tsRaw.Value).TotalMilliseconds }
+                        catch { try { $tsMs = ([TimeSpan]$tsRaw).TotalMilliseconds } catch {} }
+                    }
+                    if ($null -ne $tsMs) {
                         if ($tsMs -ne $stats.LastTimestampMs) {
                             $stats.FramesArrived++
                             if ($stats.LastTimestampMs -ge 0) {
@@ -536,6 +544,7 @@ Run-Step 'DelanCam1 stream test' {
 
         $script:streamTestOpened = $true
         $script:streamTestFramesReceived = $stats.FramesArrived
+        $script:streamTestAcquisitions = $stats.Acquisitions
         $script:streamTestMeasuredFps = $measuredFps
         $script:streamTestZeroLengthFrames = $stats.ZeroLengthFrames
         $script:streamTestTimestampErrors = $stats.TimestampErrors
@@ -547,6 +556,7 @@ Run-Step 'DelanCam1 stream test' {
         $lines.Add("Reported FPS: $curFps")
         $lines.Add("Capture window: ${captureSeconds}s")
         $lines.Add("Frames received: $($stats.FramesArrived)")
+        $lines.Add("Frame acquisitions (including repeats of the same frame): $($stats.Acquisitions)")
         $lines.Add("Measured FPS: $measuredFps")
         $lines.Add("Zero-length frames: $($stats.ZeroLengthFrames)")
         $lines.Add("Timestamp errors: $($stats.TimestampErrors)")
@@ -559,7 +569,10 @@ Run-Step 'DelanCam1 stream test' {
         if ($stats.HandlerErrors -gt 0) {
             $lines.Add("Frame-handling errors: $($stats.HandlerErrors) (last: $($stats.LastHandlerError))")
         }
-        if ($stats.FramesArrived -eq 0) {
+        if ($stats.FramesArrived -eq 0 -and $stats.Acquisitions -gt 0) {
+            $lines.Add('API errors: none (frames were acquired, but none carried a usable timestamp, so rate metrics could not be measured)')
+        }
+        elseif ($stats.FramesArrived -eq 0) {
             $lines.Add('API errors: none (device opened and stream started, but no frames arrived in the capture window)')
         }
         else {
@@ -974,7 +987,10 @@ Run-Step 'Diagnostic summary' {
     }
     else {
         $summary.Add("Frames received: $script:streamTestFramesReceived in the capture window. Measured FPS: $script:streamTestMeasuredFps.")
-        if ($script:streamTestFramesReceived -eq 0) {
+        if ($script:streamTestFramesReceived -eq 0 -and $script:streamTestAcquisitions -gt 0) {
+            $summary.Add('REVIEW: DelanCam1 delivered frames, but none carried a usable timestamp, so frame-rate metrics could not be measured. See stream-test.txt.')
+        }
+        elseif ($script:streamTestFramesReceived -eq 0) {
             $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer.')
         }
         elseif ($script:streamTestStreamStalls -gt 0) {
