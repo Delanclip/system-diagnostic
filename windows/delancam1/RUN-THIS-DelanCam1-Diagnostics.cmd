@@ -309,6 +309,7 @@ $script:streamTestMeasuredFps = 0
 $script:streamTestZeroLengthFrames = 0
 $script:streamTestTimestampErrors = 0
 $script:streamTestStreamStalls = 0
+$script:streamTestGapPattern = 'steady'
 $script:streamTestApiError = $null
 Run-Step 'DelanCam1 stream test' {
     $path = Join-Path $work 'stream-test.txt'
@@ -453,6 +454,7 @@ Run-Step 'DelanCam1 stream test' {
             FirstTimestampMs = -1.0
             LastTimestampMs = -1.0
             MaxGapMs = 0.0
+            GapsMs = (New-Object System.Collections.Generic.List[double])
             MinFrameBytes = -1
             MaxFrameBytes = 0
             ExpectedIntervalMs = $expectedIntervalMs
@@ -490,6 +492,7 @@ Run-Step 'DelanCam1 stream test' {
                                 if ($delta -le 0) { $stats.TimestampErrors++ }
                                 elseif ($stats.ExpectedIntervalMs -gt 0 -and $delta -gt ($stats.ExpectedIntervalMs * 4)) { $stats.StreamStalls++ }
                                 if ($delta -gt $stats.MaxGapMs) { $stats.MaxGapMs = $delta }
+                                if ($delta -gt 0) { $stats.GapsMs.Add($delta) }
                             }
                             if ($stats.FirstTimestampMs -lt 0) { $stats.FirstTimestampMs = $tsMs }
                             $stats.LastTimestampMs = $tsMs
@@ -542,6 +545,17 @@ Run-Step 'DelanCam1 stream test' {
             if ($elapsedSeconds -gt 0) { $measuredFps = [math]::Round(($stats.FramesArrived - 1) / $elapsedSeconds, 2) }
         }
 
+        $medianGapMs = 0
+        if ($stats.GapsMs.Count -gt 0) {
+            $sortedGaps = @($stats.GapsMs | Sort-Object)
+            $medianGapMs = [math]::Round([double]$sortedGaps[[int][math]::Floor($sortedGaps.Count / 2)], 1)
+        }
+        $gapPattern = 'steady'
+        if ($stats.StreamStalls -gt 0) {
+            if ($medianGapMs -gt 0 -and $stats.MaxGapMs -le (1.6 * $medianGapMs)) { $gapPattern = 'uniform-slow' }
+            else { $gapPattern = 'irregular' }
+        }
+
         $script:streamTestOpened = $true
         $script:streamTestFramesReceived = $stats.FramesArrived
         $script:streamTestAcquisitions = $stats.Acquisitions
@@ -549,6 +563,7 @@ Run-Step 'DelanCam1 stream test' {
         $script:streamTestZeroLengthFrames = $stats.ZeroLengthFrames
         $script:streamTestTimestampErrors = $stats.TimestampErrors
         $script:streamTestStreamStalls = $stats.StreamStalls
+        $script:streamTestGapPattern = $gapPattern
 
         $lines.Add('Device opened: YES')
         $lines.Add("Selected format: $($current.Subtype) (device default/current format, not forced by this tool)")
@@ -563,6 +578,13 @@ Run-Step 'DelanCam1 stream test' {
         $lines.Add("Frames without a usable timestamp: $($stats.MissingTimestamps)")
         $lines.Add("Stream stalls (gap > 4x expected frame interval): $($stats.StreamStalls)")
         $lines.Add("Largest frame-to-frame gap: $([math]::Round($stats.MaxGapMs, 1)) ms")
+        $lines.Add("Median frame-to-frame gap: $medianGapMs ms")
+        if ($gapPattern -eq 'uniform-slow') {
+            $lines.Add('Note: frame spacing is uniform rather than bursty. A uniformly slow frame rate is typical of')
+            $lines.Add('auto-exposure lengthening exposure time when the scene appears dark to the camera (common for')
+            $lines.Add('IR tracking cameras unless the IR emitter is in view), and is not by itself evidence of a USB')
+            $lines.Add('or hardware fault.')
+        }
         if ($stats.MinFrameBytes -ge 0) {
             $lines.Add("Frame size range (approximate, from pixel format): $($stats.MinFrameBytes) - $($stats.MaxFrameBytes) bytes")
         }
@@ -993,8 +1015,11 @@ Run-Step 'Diagnostic summary' {
         elseif ($script:streamTestFramesReceived -eq 0) {
             $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer.')
         }
+        elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestGapPattern -eq 'uniform-slow') {
+            $summary.Add('INFO: Frames arrived slower than the nominal FPS but with uniform spacing - consistent with auto-exposure in a scene that appears dark to this IR tracking camera, not with a transport fault. See stream-test.txt.')
+        }
         elseif ($script:streamTestStreamStalls -gt 0) {
-            $summary.Add("REVIEW: The stream stalled $script:streamTestStreamStalls time(s) during the test. This points to USB, driver or hardware rather than the application layer.")
+            $summary.Add("REVIEW: The stream stalled $script:streamTestStreamStalls time(s) during the test with irregular frame spacing. This points to USB, driver or hardware rather than the application layer.")
         }
         elseif ($script:streamTestZeroLengthFrames -gt 0) {
             $summary.Add("REVIEW: $script:streamTestZeroLengthFrames received frame(s) reported zero width or height.")
