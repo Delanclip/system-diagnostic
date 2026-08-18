@@ -1,7 +1,7 @@
 Delanclip DelanCam1 Diagnostics
 
 PURPOSE
-This tool collects Windows evidence that can explain DelanCam1 detection, driver, USB, privacy, security-software and application conflicts.
+This tool collects Windows evidence that can explain DelanCam1 detection, driver, USB, privacy, security-software and application conflicts. It also briefly opens DelanCam1 to test its live video stream.
 
 USAGE
 1. Keep DelanCam1 connected.
@@ -11,6 +11,8 @@ USAGE
 5. Wait until the report appears on your Desktop.
 6. Send Delanclip Support the ZIP whose name starts SEND-TO-DELANCLIP-DelanCam1-Report-.
 
+Close other apps that may use a camera (Windows Camera, OBS, Teams, Discord, OpenTrack) before step 3, so the stream test can open DelanCam1 without another app already holding it.
+
 PRIVACY
 The tool does not collect camera images or video, command lines of running processes, browser history, passwords, emails, personal documents, photos or their contents.
 
@@ -18,7 +20,9 @@ It does not collect Microsoft Defender threat history or antivirus scan contents
 
 It does not install software, replace drivers, stop applications, alter privacy settings, make network connections, send telemetry, upload reports or download code.
 
-It does collect system-wide names and process IDs of running applications, names/statuses of Windows problem devices, registered antivirus product names, selected Defender status and camera privacy/access records. These are needed to identify software, security, privacy and hardware conflicts that may affect camera access.
+It does not save any image, video frame or frame content from the camera. The stream test derives only counts, sizes and timestamps in memory and discards the underlying frame data immediately.
+
+It does collect system-wide names and process IDs of running applications, names/statuses of Windows problem devices, registered antivirus product names, selected Defender status, camera privacy/access records and a technical summary of the DelanCam1 video stream (frame counts, measured frame rate, frame sizes and timestamps). These are needed to identify software, security, privacy and hardware conflicts that may affect camera access.
 
 OUTPUT
 The report ZIP contains:
@@ -30,6 +34,7 @@ The report ZIP contains:
 - delancam-driver.txt - driver provider, version, date, INF and signature
 - delancam-pnp.txt - Device Manager/PnP status and error code
 - usb-path.txt - USB parent chain and location paths
+- stream-test.txt - result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format, frame count, measured FPS, zero-length frames, timestamp errors and stream stalls, or the exact Windows error if it could not be opened
 - problem-devices.txt - system-wide PnP devices with non-zero Windows error codes
 - security-products.txt - antivirus products registered with Windows Security Center
 - defender-status.txt - selected Microsoft Defender protection status
@@ -47,4 +52,4 @@ The report ZIP contains:
 - driver-conflict-hints.txt - present driver records matching libusb, Zadig, WinUSB or APP Mode review terms
 - errors.txt - collection steps that failed, if any
 
-This version detects evidence of likely blockers and conflicts. It does not yet prove image-stream health by opening or recording DelanCam1.
+This version detects evidence of likely blockers and conflicts, and also opens DelanCam1 to measure whether its video stream delivers frames at a steady rate. It does not yet analyse frame content, so a clean stream test does not by itself prove the image is visually correct.
