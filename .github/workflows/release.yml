@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  statuses: write
 
 jobs:
   release:
@@ -67,7 +68,6 @@ jobs:
 
           for dir in windows/*/; do
             test -d "$dir" || continue
-
             scripts=("$dir"*.cmd)
             if [ "${#scripts[@]}" -eq 0 ]; then
               continue
@@ -82,13 +82,8 @@ jobs:
             script_path="${scripts[0]}"
             script=$(basename "$script_path")
             readme="${dir}README.txt"
+            test -f "$readme" || { echo "::error::$readme is missing"; exit 1; }
 
-            test -f "$readme" || {
-              echo "::error::$readme is missing"
-              exit 1
-            }
-
-            # Windows-facing files must ship with CRLF endings.
             for f in "$script_path" "$readme"; do
               grep -q $'\r' "$f" || {
                 echo "::error::$f is not CRLF"
@@ -97,10 +92,7 @@ jobs:
             done
 
             asset="${script%.cmd}.zip"
-            test ! -e "$asset" || {
-              echo "::error::Duplicate asset name: $asset"
-              exit 1
-            }
+            test ! -e "$asset" || { echo "::error::Duplicate asset name: $asset"; exit 1; }
 
             (
               cd "$dir"
@@ -151,6 +143,12 @@ jobs:
             --target "${{ github.sha }}" \
             --title "$RELEASE_TITLE $RELEASE_VERSION" \
             --notes-file notes.md
+
+          gh api --method POST \
+            "repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -f state=success \
+            -f context='delanclip/release' \
+            -f description="Published $RELEASE_VERSION"
 
           echo "Permanent latest-release links:"
           for asset in "${assets[@]}"; do
