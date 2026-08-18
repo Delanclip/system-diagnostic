@@ -44,8 +44,8 @@ jobs:
           else
             request=".github/release-request.txt"
             test -f "$request" || { echo "::error::$request is missing"; exit 1; }
-            version="$(sed -n 's/^version=//p' "$request" | head -n 1)"
-            title="$(sed -n 's/^title=//p' "$request" | head -n 1)"
+            version="$(sed -n 's/^version=//p' "$request" | head -n 1 | tr -d '\r')"
+            title="$(sed -n 's/^title=//p' "$request" | head -n 1 | tr -d '\r')"
           fi
 
           [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
