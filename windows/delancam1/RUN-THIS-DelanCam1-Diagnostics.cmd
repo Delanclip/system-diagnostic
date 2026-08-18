@@ -319,6 +319,8 @@ $script:streamTestIdenticalPairs = 0
 $script:streamTestSampleMax = 0
 $script:streamTestPixelFormat = ''
 $script:streamTestStoppedEarly = $false
+$script:streamTestMinorHiccup = $false
+$script:streamTestMaxGapMs = 0
 $script:streamTestApiError = $null
 Run-Step 'DelanCam1 stream test' {
     $path = Join-Path $work 'stream-test.txt'
@@ -671,6 +673,8 @@ Run-Step 'DelanCam1 stream test' {
         if ($null -ne $lastFrameWall) { $tailSilenceMs = [math]::Round(($loopEndWall - $lastFrameWall).TotalMilliseconds, 0) }
         $streamStopped = $false
         if ($stats.FramesArrived -gt 0 -and $tailSilenceMs -gt [math]::Max(1000, ($stats.ExpectedIntervalMs * 10))) { $streamStopped = $true }
+        $minorHiccup = $false
+        if ($stats.StreamStalls -gt 0 -and $stats.StreamStalls -le 2 -and $stats.MaxGapMs -le 150 -and (-not $streamStopped) -and ($curFps -le 0 -or $measuredFps -ge (0.8 * $curFps))) { $minorHiccup = $true }
 
         $script:streamTestOpened = $true
         $script:streamTestFramesReceived = $stats.FramesArrived
@@ -686,6 +690,8 @@ Run-Step 'DelanCam1 stream test' {
         $script:streamTestSampleMax = $stats.SampleByteMax
         $script:streamTestPixelFormat = $stats.PixelFormatName
         $script:streamTestStoppedEarly = $streamStopped
+        $script:streamTestMinorHiccup = $minorHiccup
+        $script:streamTestMaxGapMs = [math]::Round($stats.MaxGapMs, 0)
 
         $lines.Add('Device opened: YES')
         $lines.Add("Selected format: $($current.Subtype) (the camera's current format for this test)")
@@ -712,6 +718,10 @@ Run-Step 'DelanCam1 stream test' {
             $lines.Add('Note: frame spacing is uniform rather than bursty. A uniformly slow frame rate is typical of')
             $lines.Add('auto-exposure lengthening exposure time when the scene appears dark to the camera, and is not')
             $lines.Add('by itself evidence of a USB or hardware fault.')
+        }
+        if ($minorHiccup) {
+            $lines.Add('Note: the recorded stall(s) are brief and the overall frame rate is healthy. This is treated as')
+            $lines.Add('normal system-load jitter, not a transport fault.')
         }
         if ($stats.MinFrameBytes -ge 0) {
             $lines.Add("Frame size range (approximate, from pixel format): $($stats.MinFrameBytes) - $($stats.MaxFrameBytes) bytes")
@@ -1164,6 +1174,9 @@ Run-Step 'Diagnostic summary' {
         }
         elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestGapPattern -eq 'uniform-slow') {
             $summary.Add('INFO: Frames arrived slower than the nominal FPS but with uniform spacing - consistent with auto-exposure in a scene that appears dark to this IR tracking camera, not with a transport fault. See stream-test.txt.')
+        }
+        elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestMinorHiccup) {
+            $summary.Add("INFO: $script:streamTestStreamStalls brief frame-delivery hiccup(s) (largest gap $script:streamTestMaxGapMs ms) in an otherwise steady stream - common under normal system load, not treated as a fault.")
         }
         elseif ($script:streamTestStreamStalls -gt 0) {
             $summary.Add("REVIEW: The stream stalled $script:streamTestStreamStalls time(s) during the test with irregular frame spacing. This points to USB, driver or hardware rather than the application layer.")
