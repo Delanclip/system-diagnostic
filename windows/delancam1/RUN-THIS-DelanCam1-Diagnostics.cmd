@@ -413,8 +413,13 @@ Run-Step 'DelanCam1 stream test' {
         }
         if (-not $chosenInfo) { throw 'MediaFrameSourceGroup exposed no source infos for this device.' }
 
-        $frameSource = $mediaCapture.FrameSources.Item($chosenInfo.Id)
-        if (-not $frameSource) { throw "MediaCapture did not expose a frame source for Id $($chosenInfo.Id)." }
+        $framePairs = @($mediaCapture.FrameSources)
+        $frameSource = $null
+        foreach ($pair in $framePairs) {
+            if ([string]$pair.Key -eq [string]$chosenInfo.Id) { $frameSource = $pair.Value; break }
+        }
+        if (-not $frameSource -and $framePairs.Count -gt 0) { $frameSource = $framePairs[0].Value }
+        if (-not $frameSource) { throw "MediaCapture did not expose a usable frame source (entries: $($framePairs.Count))." }
         $lines.Add("Selected frame source: $frameSourceSelection")
         $lines.Add('')
 
