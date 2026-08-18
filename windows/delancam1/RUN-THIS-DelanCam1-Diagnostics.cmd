@@ -318,6 +318,7 @@ $script:streamTestDistinctFrames = 0
 $script:streamTestIdenticalPairs = 0
 $script:streamTestSampleMax = 0
 $script:streamTestPixelFormat = ''
+$script:streamTestStoppedEarly = $false
 $script:streamTestApiError = $null
 Run-Step 'DelanCam1 stream test' {
     $path = Join-Path $work 'stream-test.txt'
@@ -520,6 +521,9 @@ Run-Step 'DelanCam1 stream test' {
         $md5 = [System.Security.Cryptography.MD5]::Create()
         $contentBuffer = $null
         $contentBufferSize = 0
+        $loopStartWall = [DateTime]::UtcNow
+        $firstFrameWall = $null
+        $lastFrameWall = $null
 
         # Windows PowerShell cannot subscribe to Windows Runtime events, so the
         # FrameArrived event is unusable here. Poll TryAcquireLatestFrame in a
@@ -541,6 +545,8 @@ Run-Step 'DelanCam1 stream test' {
                     if ($null -ne $tsMs) {
                         if ($tsMs -ne $stats.LastTimestampMs) {
                             $stats.FramesArrived++
+                            if ($null -eq $firstFrameWall) { $firstFrameWall = [DateTime]::UtcNow }
+                            $lastFrameWall = [DateTime]::UtcNow
                             if ($stats.LastTimestampMs -ge 0) {
                                 $delta = $tsMs - $stats.LastTimestampMs
                                 if ($delta -le 0) { $stats.TimestampErrors++ }
@@ -639,6 +645,7 @@ Run-Step 'DelanCam1 stream test' {
             Start-Sleep -Milliseconds 2
         }
 
+        $loopEndWall = [DateTime]::UtcNow
         try { Wait-WinRtAction ($frameReader.StopAsync()) 5000 } catch {}
 
         $measuredFps = 0
@@ -658,6 +665,13 @@ Run-Step 'DelanCam1 stream test' {
             else { $gapPattern = 'irregular' }
         }
 
+        $firstFrameDelayMs = -1
+        $tailSilenceMs = -1
+        if ($null -ne $firstFrameWall) { $firstFrameDelayMs = [math]::Round(($firstFrameWall - $loopStartWall).TotalMilliseconds, 0) }
+        if ($null -ne $lastFrameWall) { $tailSilenceMs = [math]::Round(($loopEndWall - $lastFrameWall).TotalMilliseconds, 0) }
+        $streamStopped = $false
+        if ($stats.FramesArrived -gt 0 -and $tailSilenceMs -gt [math]::Max(1000, ($stats.ExpectedIntervalMs * 10))) { $streamStopped = $true }
+
         $script:streamTestOpened = $true
         $script:streamTestFramesReceived = $stats.FramesArrived
         $script:streamTestAcquisitions = $stats.Acquisitions
@@ -671,6 +685,7 @@ Run-Step 'DelanCam1 stream test' {
         $script:streamTestIdenticalPairs = $stats.IdenticalFramePairs
         $script:streamTestSampleMax = $stats.SampleByteMax
         $script:streamTestPixelFormat = $stats.PixelFormatName
+        $script:streamTestStoppedEarly = $streamStopped
 
         $lines.Add('Device opened: YES')
         $lines.Add("Selected format: $($current.Subtype) (the camera's current format for this test)")
@@ -686,6 +701,13 @@ Run-Step 'DelanCam1 stream test' {
         $lines.Add("Stream stalls (gap > 4x expected frame interval): $($stats.StreamStalls)")
         $lines.Add("Largest frame-to-frame gap: $([math]::Round($stats.MaxGapMs, 1)) ms")
         $lines.Add("Median frame-to-frame gap: $medianGapMs ms")
+        if ($firstFrameDelayMs -ge 0) { $lines.Add("First frame arrived: $firstFrameDelayMs ms after capture start") }
+        if ($tailSilenceMs -ge 0) { $lines.Add("Silence after the last frame: $tailSilenceMs ms of the capture window") }
+        if ($streamStopped) {
+            $lines.Add('Note: the stream stopped delivering frames well before the end of the capture window. Security')
+            $lines.Add('software with webcam-protection features can cut a camera stream mid-use; USB or driver faults')
+            $lines.Add('can too. Compare with the installed security products in this report.')
+        }
         if ($gapPattern -eq 'uniform-slow') {
             $lines.Add('Note: frame spacing is uniform rather than bursty. A uniformly slow frame rate is typical of')
             $lines.Add('auto-exposure lengthening exposure time when the scene appears dark to the camera, and is not')
@@ -1162,6 +1184,9 @@ Run-Step 'Diagnostic summary' {
         }
         elseif ($script:streamTestIdenticalPairs -gt 0) {
             $summary.Add("REVIEW: $script:streamTestIdenticalPairs consecutive frame pair(s) had byte-identical content. A live sensor almost never produces identical frames - review together with the other stream metrics.")
+        }
+        if ($script:streamTestStoppedEarly) {
+            $summary.Add('REVIEW: The stream stopped delivering frames well before the end of the capture window. Webcam-protection features in security software can cut camera streams mid-use; USB or driver faults can too. Compare with the security products listed below.')
         }
         $summary.Add('Content analysis flags frozen/identical frames but cannot judge whether a varying image looks correct. See stream-test.txt for full detail.')
     }
