@@ -78,9 +78,11 @@ telemetry, upload reports or download code.
 
 The stream test briefly opens DelanCam1 using Windows's own camera APIs, but it
 does not save any image, video frame or frame content. It derives only counts,
-sizes, timestamps and checksums in memory and discards the underlying frame
-data immediately. The checksums exist to detect a frozen stream (frames that
-never change); a checksum cannot be turned back into an image.
+sizes, timestamps, checksums and basic brightness statistics in memory and
+discards the underlying frame data immediately. The checksums exist to detect a
+frozen stream (frames that never change) and the brightness statistics tell a
+genuinely dark scene apart from a frozen detailed image; neither can be turned
+back into a picture.
 
 The report stays on the Desktop until the customer chooses to send it.
 
@@ -94,7 +96,8 @@ conflicts are not always caused by the camera itself. This includes:
 - camera privacy/access records exposed by Windows;
 - camera-related Windows services and event-log entries;
 - a technical summary of the DelanCam1 video stream obtained by briefly opening
-  the camera: frame counts, measured frame rate, frame sizes and timestamps.
+  the camera: frame counts, measured frame rate, frame sizes, timestamps, frame
+  checksums and basic brightness statistics.
 
 Per-application camera access registry paths can contain a Windows user profile
 name. The tool redacts that profile component before writing the report.
@@ -121,7 +124,7 @@ It contains:
 | `delancam-driver.txt` | Bound driver provider, version, date, INF, signature and signer |
 | `delancam-pnp.txt` | Device Manager/PnP status, service and `ConfigManagerErrorCode` |
 | `usb-path.txt` | DelanCam1 parent-device chain and USB location paths |
-| `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls and frozen-frame checksum results, or the exact Windows error if it could not be opened |
+| `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened |
 | `problem-devices.txt` | System-wide PnP devices with non-zero Windows error codes |
 | `security-products.txt` | Antivirus products registered with Windows Security Center |
 | `defender-status.txt` | Selected Microsoft Defender protection-status fields |
@@ -166,10 +169,14 @@ cannot hang the rest of the diagnostic run; a timeout is recorded as an error
 in `stream-test.txt` like any other failure.
 
 During capture each frame is checksummed in memory (MD5 over the raw pixel
-buffer) solely to count how many distinct frame contents arrived. A healthy
-live sensor produces a different checksum for every frame; a stream whose
-checksums never change is frozen at the source. The pixel data itself is
-discarded immediately after the checksum is computed.
+buffer) solely to count how many distinct frame contents arrived, and a small
+sample of pixel bytes is periodically reduced to min/max/mean brightness. A
+healthy live sensor normally produces a different checksum for every frame, but
+an IR tracking camera looking at a scene with nothing bright in it can
+legitimately produce identical, essentially black frames - the brightness
+statistics let the report tell that apart from a stream frozen on a detailed
+image. The pixel data itself is discarded immediately after these numbers are
+computed.
 
 Windows can deny camera access through privacy settings or policy, and Microsoft
 Defender exposes protection status through Windows PowerShell. Those system

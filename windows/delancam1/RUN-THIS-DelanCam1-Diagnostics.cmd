@@ -158,8 +158,9 @@ Collected:
 - a short native stream test: opens DelanCam1 with Windows camera APIs,
   requests the 640x480 @ 60 FPS format head tracking uses when available,
   measures whether frames arrive, how fast, and whether the stream stalls,
-  and checksums frames in memory to detect a frozen stream, without saving
-  any frame image or video data
+  and checksums frames in memory (plus basic brightness statistics) to tell
+  a frozen stream from a genuinely dark scene, without saving any frame
+  image or video data
 - active power scheme and USB power-policy output when available
 - a short diagnostic summary
 
@@ -315,6 +316,8 @@ $script:streamTestGapPattern = 'steady'
 $script:streamTestHashedFrames = 0
 $script:streamTestDistinctFrames = 0
 $script:streamTestIdenticalPairs = 0
+$script:streamTestSampleMax = 0
+$script:streamTestPixelFormat = ''
 $script:streamTestApiError = $null
 Run-Step 'DelanCam1 stream test' {
     $path = Join-Path $work 'stream-test.txt'
@@ -495,6 +498,13 @@ Run-Step 'DelanCam1 stream test' {
             UniqueHashes = (New-Object 'System.Collections.Generic.HashSet[string]')
             ContentAnalysisErrors = 0
             LastContentError = ''
+            SampledFrames = 0
+            SampleByteMin = 255
+            SampleByteMax = 0
+            SampleByteMeanSum = 0.0
+            UvMeanSum = 0.0
+            UvSamples = 0
+            PixelFormatName = ''
             MinFrameBytes = -1
             MaxFrameBytes = 0
             ExpectedIntervalMs = $expectedIntervalMs
@@ -580,6 +590,27 @@ Run-Step 'DelanCam1 stream test' {
                                         if ($stats.LastFrameHash -eq $frameHash) { $stats.IdenticalFramePairs++ }
                                         $stats.LastFrameHash = $frameHash
                                         [void]$stats.UniqueHashes.Add($frameHash)
+
+                                        if ($stats.HashedFrames -eq 1 -or ($stats.HashedFrames % 25) -eq 0) {
+                                            $stats.PixelFormatName = $sb.BitmapPixelFormat.ToString()
+                                            $sampleLen = [Math]::Min(32768, $frameBytes.Length)
+                                            $byteSample = [int[]]($frameBytes[0..($sampleLen - 1)])
+                                            $sMin = [System.Linq.Enumerable]::Min($byteSample)
+                                            $sMax = [System.Linq.Enumerable]::Max($byteSample)
+                                            if ($sMin -lt $stats.SampleByteMin) { $stats.SampleByteMin = $sMin }
+                                            if ($sMax -gt $stats.SampleByteMax) { $stats.SampleByteMax = $sMax }
+                                            $stats.SampleByteMeanSum += [System.Linq.Enumerable]::Average($byteSample)
+                                            $stats.SampledFrames++
+                                            if ($stats.PixelFormatName -eq 'Nv12') {
+                                                $uvStart = $width * $height
+                                                if ($frameBytes.Length -ge ($uvStart + 1024)) {
+                                                    $uvLen = [Math]::Min(32768, $frameBytes.Length - $uvStart)
+                                                    $uvSample = [int[]]($frameBytes[$uvStart..($uvStart + $uvLen - 1)])
+                                                    $stats.UvMeanSum += [System.Linq.Enumerable]::Average($uvSample)
+                                                    $stats.UvSamples++
+                                                }
+                                            }
+                                        }
                                     }
                                     else {
                                         $stats.ContentAnalysisErrors++
@@ -638,6 +669,8 @@ Run-Step 'DelanCam1 stream test' {
         $script:streamTestHashedFrames = $stats.HashedFrames
         $script:streamTestDistinctFrames = $stats.UniqueHashes.Count
         $script:streamTestIdenticalPairs = $stats.IdenticalFramePairs
+        $script:streamTestSampleMax = $stats.SampleByteMax
+        $script:streamTestPixelFormat = $stats.PixelFormatName
 
         $lines.Add('Device opened: YES')
         $lines.Add("Selected format: $($current.Subtype) (the camera's current format for this test)")
@@ -655,9 +688,8 @@ Run-Step 'DelanCam1 stream test' {
         $lines.Add("Median frame-to-frame gap: $medianGapMs ms")
         if ($gapPattern -eq 'uniform-slow') {
             $lines.Add('Note: frame spacing is uniform rather than bursty. A uniformly slow frame rate is typical of')
-            $lines.Add('auto-exposure lengthening exposure time when the scene appears dark to the camera (common for')
-            $lines.Add('IR tracking cameras unless the IR emitter is in view), and is not by itself evidence of a USB')
-            $lines.Add('or hardware fault.')
+            $lines.Add('auto-exposure lengthening exposure time when the scene appears dark to the camera, and is not')
+            $lines.Add('by itself evidence of a USB or hardware fault.')
         }
         if ($stats.MinFrameBytes -ge 0) {
             $lines.Add("Frame size range (approximate, from pixel format): $($stats.MinFrameBytes) - $($stats.MaxFrameBytes) bytes")
@@ -666,6 +698,14 @@ Run-Step 'DelanCam1 stream test' {
             $lines.Add("Frames checksummed in memory: $($stats.HashedFrames)")
             $lines.Add("Distinct frame contents: $($stats.UniqueHashes.Count)")
             $lines.Add("Consecutive byte-identical frames: $($stats.IdenticalFramePairs)")
+            if ($stats.SampledFrames -gt 0) {
+                $sampleMean = [math]::Round($stats.SampleByteMeanSum / $stats.SampledFrames, 1)
+                $lines.Add("Frame-start byte sample ($($stats.PixelFormatName)): min $($stats.SampleByteMin), max $($stats.SampleByteMax), mean $sampleMean across $($stats.SampledFrames) sampled frame(s)")
+                if ($stats.UvSamples -gt 0) {
+                    $uvMean = [math]::Round($stats.UvMeanSum / $stats.UvSamples, 1)
+                    $lines.Add("Chroma-plane sample mean: $uvMean (neutral grey chroma is 128)")
+                }
+            }
         }
         elseif ($stats.FramesArrived -gt 0) {
             $lines.Add('Frame content could not be checksummed for any frame.')
@@ -1113,7 +1153,12 @@ Run-Step 'Diagnostic summary' {
             $summary.Add('The capture API delivered frames at a steady rate with no stalls. If the client still sees a corrupted image, this points above the raw camera stream, such as application, codec or rendering, rather than DelanCam1 itself.')
         }
         if ($script:streamTestHashedFrames -ge 5 -and $script:streamTestDistinctFrames -eq 1) {
-            $summary.Add('REVIEW HIGH: Every captured frame was byte-identical. The stream appears frozen even though frames keep arriving - this points to sensor, hardware or driver, not the application layer.')
+            if ($script:streamTestPixelFormat -eq 'Nv12' -and $script:streamTestSampleMax -le 40) {
+                $summary.Add('INFO: All captured frames were byte-identical and essentially black. An IR tracking camera looking at a scene with nothing bright in it can legitimately produce an unchanging black image, so this alone is not treated as a fault. Pointing any light or IR source at the camera and re-running gives a definitive frozen-vs-dark answer.')
+            }
+            else {
+                $summary.Add('REVIEW HIGH: Every captured frame was byte-identical while containing non-black detail. The stream appears frozen even though frames keep arriving - this points to sensor, hardware or driver, not the application layer.')
+            }
         }
         elseif ($script:streamTestIdenticalPairs -gt 0) {
             $summary.Add("REVIEW: $script:streamTestIdenticalPairs consecutive frame pair(s) had byte-identical content. A live sensor almost never produces identical frames - review together with the other stream metrics.")
