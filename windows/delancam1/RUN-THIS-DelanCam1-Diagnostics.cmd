@@ -400,9 +400,9 @@ Run-Step 'DelanCam1 stream test' {
         Wait-WinRtAction ($mediaCapture.InitializeAsync($settings)) 8000
 
         $frameSource = $null
-        foreach ($kv in $mediaCapture.FrameSources.GetEnumerator()) {
-            if ($kv.Value.Info.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color) {
-                $frameSource = $kv.Value
+        foreach ($candidate in $mediaCapture.FrameSources.Values) {
+            if ($candidate.Info.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color) {
+                $frameSource = $candidate
                 break
             }
         }
