@@ -399,19 +399,22 @@ Run-Step 'DelanCam1 stream test' {
         $settings.StreamingCaptureMode = [Windows.Media.Capture.StreamingCaptureMode]::Video
         Wait-WinRtAction ($mediaCapture.InitializeAsync($settings)) 8000
 
-        $frameSourceCandidates = @($mediaCapture.FrameSources.Values)
-        $lines.Add("Frame sources exposed by MediaCapture: $($frameSourceCandidates.Count)")
-        foreach ($candidate in $frameSourceCandidates) {
-            $lines.Add("  - SourceKind: $($candidate.Info.SourceKind)")
+        $sourceInfos = @($group.SourceInfos)
+        $lines.Add("Frame sources exposed by MediaFrameSourceGroup: $($sourceInfos.Count)")
+        foreach ($info in $sourceInfos) {
+            $lines.Add("  - SourceKind: $($info.SourceKind), Id: $($info.Id)")
         }
 
-        $frameSource = $frameSourceCandidates | Where-Object { $_.Info.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color } | Select-Object -First 1
+        $chosenInfo = $sourceInfos | Where-Object { $_.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color } | Select-Object -First 1
         $frameSourceSelection = 'Color'
-        if (-not $frameSource -and $frameSourceCandidates.Count -gt 0) {
-            $frameSource = $frameSourceCandidates[0]
-            $frameSourceSelection = "fallback: $($frameSource.Info.SourceKind) (no Color-kind source was exposed)"
+        if (-not $chosenInfo -and $sourceInfos.Count -gt 0) {
+            $chosenInfo = $sourceInfos[0]
+            $frameSourceSelection = "fallback: $($chosenInfo.SourceKind) (no Color-kind source was exposed)"
         }
-        if (-not $frameSource) { throw 'MediaCapture did not expose any frame source for this device.' }
+        if (-not $chosenInfo) { throw 'MediaFrameSourceGroup exposed no source infos for this device.' }
+
+        $frameSource = $mediaCapture.FrameSources.Item($chosenInfo.Id)
+        if (-not $frameSource) { throw "MediaCapture did not expose a frame source for Id $($chosenInfo.Id)." }
         $lines.Add("Selected frame source: $frameSourceSelection")
         $lines.Add('')
 
