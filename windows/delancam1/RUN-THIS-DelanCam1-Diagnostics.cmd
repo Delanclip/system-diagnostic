@@ -320,6 +320,7 @@ $script:streamTestSampleMax = 0
 $script:streamTestPixelFormat = ''
 $script:streamTestStoppedEarly = $false
 $script:streamTestMinorHiccup = $false
+$script:streamTestFirstFrameDelayMs = -1
 $script:streamTestMaxGapMs = 0
 $script:streamTestApiError = $null
 Run-Step 'DelanCam1 stream test' {
@@ -691,6 +692,7 @@ Run-Step 'DelanCam1 stream test' {
         $script:streamTestPixelFormat = $stats.PixelFormatName
         $script:streamTestStoppedEarly = $streamStopped
         $script:streamTestMinorHiccup = $minorHiccup
+        $script:streamTestFirstFrameDelayMs = $firstFrameDelayMs
         $script:streamTestMaxGapMs = [math]::Round($stats.MaxGapMs, 0)
 
         $lines.Add('Device opened: YES')
@@ -1171,6 +1173,9 @@ Run-Step 'Diagnostic summary' {
         }
         elseif ($script:streamTestFramesReceived -eq 0) {
             $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer.')
+        }
+        elseif ($script:streamTestFramesReceived -lt 5) {
+            $summary.Add("REVIEW HIGH: The stream delivered only $script:streamTestFramesReceived frame(s) in the capture window (first frame after $script:streamTestFirstFrameDelayMs ms). Too few to measure a working video feed. This usually points to USB, driver or hardware; extreme low light can also slow frame delivery this much on an IR camera, so check the sampled brightness below before ruling that out.")
         }
         elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestGapPattern -eq 'uniform-slow') {
             $summary.Add('INFO: Frames arrived slower than the nominal FPS but with uniform spacing - consistent with auto-exposure in a scene that appears dark to this IR tracking camera, not with a transport fault. See stream-test.txt.')
