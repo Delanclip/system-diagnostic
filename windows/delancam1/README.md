@@ -1,6 +1,6 @@
 # DelanCam1 Diagnostic Tool (Windows)
 
-`RUN-THIS-DelanCam1-Diagnostics.cmd` collects Windows evidence that can explain
+`DelanCam1-Diagnostics.cmd` collects Windows evidence that can explain
 why DelanCam1 is detected incorrectly, produces a corrupted image, or cannot be
 used normally by camera software.
 
@@ -43,9 +43,9 @@ does not by itself prove that the picture is right.
 2. Close other apps that may use a camera, such as Windows Camera, OBS, Teams,
    Discord or OpenTrack, so the stream test can open DelanCam1 without another
    app already holding it.
-3. Download `RUN-THIS-DelanCam1-Diagnostics.zip` from the latest release and
+3. Download `DelanCam1-Diagnostics.zip` from the latest release and
    unzip it. Do not run the tool from inside the ZIP.
-4. Run `RUN-THIS-DelanCam1-Diagnostics.cmd`.
+4. Run `DelanCam1-Diagnostics.cmd`.
 5. Read the privacy notice shown in the window, then press a key to continue.
 6. Wait for the tool to finish. The stream test briefly opens DelanCam1 and
    takes a few seconds.

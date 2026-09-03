@@ -5,8 +5,8 @@ This tool collects Windows evidence that can explain DelanCam1 detection, driver
 
 USAGE
 1. Keep DelanCam1 connected.
-2. Unzip RUN-THIS-DelanCam1-Diagnostics.zip.
-3. Run RUN-THIS-DelanCam1-Diagnostics.cmd.
+2. Unzip DelanCam1-Diagnostics.zip.
+3. Run DelanCam1-Diagnostics.cmd.
 4. Read the notice and press a key to continue.
 5. Wait until the report appears on your Desktop.
 6. Send Delanclip Support the ZIP whose name starts SEND-TO-DELANCLIP-DelanCam1-Report-.
