@@ -14,9 +14,10 @@ echo OBS, Teams, Discord or OpenTrack, so the stream test can open DelanCam1
 echo without another app already holding it.
 echo.
 echo This tool collects Windows camera, driver, USB, privacy,
-echo security-product and running-application information. It also briefly
-echo opens DelanCam1 to test its video stream, but does NOT save any image
-echo or video data from the camera.
+echo security-product, installed-program and running-application
+echo information, plus the Windows video-decoder registrations that camera
+echo software depends on. It also briefly opens DelanCam1 to test its video
+echo stream, but does NOT save any image or video data from the camera.
 echo It does NOT change drivers, install software, upload anything, or make
 echo network connections.
 echo.
@@ -161,6 +162,18 @@ Collected:
   and checksums frames in memory (plus basic brightness statistics) to tell
   a frozen stream from a genuinely dark scene, without saving any frame
   image or video data
+- a per-format probe (MJPG, NV12 and YUY2 at 640x480, 2 seconds each) that
+  tells a camera delivering nothing from a Windows decoder problem that
+  affects only MJPEG; again only frame counts are kept
+- registered Media Foundation video decoders (names, identifiers, file
+  paths) and the Windows hardware-decoder switch
+- DirectShow registrations: core components, software/virtual cameras,
+  filters with missing files or third-party locations, the preferred MJPG
+  decoder, DoNotUse and VFW codec entries (names, identifiers, file paths)
+- names, versions, publishers and install dates of installed programs
+  (system-wide), because codec packs, virtual cameras and cleaner tools
+  are common causes of camera failures
+- time since the last restart, Fast Startup and pending-reboot state
 - active power scheme and USB power-policy output when available
 - a short diagnostic summary
 
@@ -783,6 +796,490 @@ Run-Step 'DelanCam1 stream test' {
     $lines | Set-Content -LiteralPath $path -Encoding UTF8
 }
 
+$script:formatProbePerformed = $false
+$script:formatProbeError = $null
+$script:formatProbeMjpgFrames = 0
+$script:formatProbeRawFrames = 0
+$script:formatProbeRows = 0
+Run-Step 'DelanCam1 format probe' {
+    $path = Join-Path $work 'format-probe.txt'
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Delanclip DelanCam1 Format Probe')
+    $lines.Add("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
+    $lines.Add('')
+    $lines.Add('Opens DelanCam1 once per format through the same Windows camera API as the stream test and')
+    $lines.Add('counts the frames that arrive in a short window. It tells a camera that delivers nothing at all')
+    $lines.Add('apart from a Windows decoder problem that affects only MJPEG. Nothing is saved from the frames;')
+    $lines.Add('only counts are kept.')
+    $lines.Add('')
+
+    if ($script:delanCams.Count -eq 0) {
+        $lines.Add('Skipped: DelanCam1 is not present.')
+        $lines | Set-Content -LiteralPath $path -Encoding UTF8
+        return
+    }
+    if (-not $script:streamTestOpened) {
+        $lines.Add('Skipped: the stream test could not open DelanCam1, so a per-format probe would fail the same way.')
+        $lines | Set-Content -LiteralPath $path -Encoding UTF8
+        return
+    }
+
+    function Wait-WinRtOperation {
+        param($WinRtTask, [type]$ResultType, [int]$TimeoutMs = 5000)
+        $methods = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+        }
+        if (-not $methods) { throw 'Could not locate WindowsRuntimeSystemExtensions.AsTask(IAsyncOperation<T>) on this system.' }
+        $asTaskGeneric = $methods[0].MakeGenericMethod($ResultType)
+        $netTask = $asTaskGeneric.Invoke($null, @($WinRtTask))
+        if (-not $netTask.Wait($TimeoutMs)) { throw "Timed out after ${TimeoutMs}ms waiting for a Windows Runtime operation." }
+        return $netTask.Result
+    }
+
+    function Wait-WinRtAction {
+        param($WinRtAction, [int]$TimeoutMs = 5000)
+        $methods = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+            $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction'
+        }
+        if (-not $methods) { throw 'Could not locate WindowsRuntimeSystemExtensions.AsTask(IAsyncAction) on this system.' }
+        $netTask = $methods[0].Invoke($null, @($WinRtAction))
+        if (-not $netTask.Wait($TimeoutMs)) { throw "Timed out after ${TimeoutMs}ms waiting for a Windows Runtime operation." }
+    }
+
+    function Get-ProbeLabel {
+        param($Format)
+        $vf = $Format.VideoFormat
+        $fr = $Format.FrameRate
+        $fps = 0
+        if ($fr -and $fr.Denominator -ne 0) { $fps = [math]::Round($fr.Numerator / $fr.Denominator, 2) }
+        return ('{0} {1}x{2}@{3}' -f $Format.Subtype, $vf.Width, $vf.Height, $fps)
+    }
+
+    function Get-ProbeSource {
+        param($MediaCapture, $Group)
+        $sourceInfos = @($Group.SourceInfos)
+        $chosenInfo = $sourceInfos | Where-Object { $_.SourceKind -eq [Windows.Media.Capture.Frames.MediaFrameSourceKind]::Color } | Select-Object -First 1
+        if (-not $chosenInfo -and $sourceInfos.Count -gt 0) { $chosenInfo = $sourceInfos[0] }
+        if (-not $chosenInfo) { throw 'MediaFrameSourceGroup exposed no source infos for this device.' }
+        $framePairs = @($MediaCapture.FrameSources)
+        $source = $null
+        foreach ($pair in $framePairs) {
+            if ([string]$pair.Key -eq [string]$chosenInfo.Id) { $source = $pair.Value; break }
+        }
+        if (-not $source -and $framePairs.Count -gt 0) { $source = $framePairs[0].Value }
+        if (-not $source) { throw 'MediaCapture did not expose a usable frame source.' }
+        return $source
+    }
+
+    function New-ProbeCapture {
+        param($Group)
+        $mc = New-Object Windows.Media.Capture.MediaCapture
+        $settings = New-Object Windows.Media.Capture.MediaCaptureInitializationSettings
+        $settings.SourceGroup = $Group
+        $settings.SharingMode = [Windows.Media.Capture.MediaCaptureSharingMode]::ExclusiveControl
+        $settings.MemoryPreference = [Windows.Media.Capture.MediaCaptureMemoryPreference]::Cpu
+        $settings.StreamingCaptureMode = [Windows.Media.Capture.StreamingCaptureMode]::Video
+        Wait-WinRtAction ($mc.InitializeAsync($settings)) 8000
+        return $mc
+    }
+
+    $probeSeconds = 2
+    $wanted = @('MJPG 640x480@60', 'NV12 640x480@60', 'MJPG 640x480@30', 'NV12 640x480@30', 'YUY2 640x480@30')
+    $vidPidPattern = '(?i)VID_0120.*PID_1234'
+
+    try {
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime -ErrorAction Stop
+        [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Enumeration.DeviceClass,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Devices.Enumeration.DeviceInformationCollection,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameSourceGroup,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameSourceKind,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameReader,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.Frames.MediaFrameReaderStartStatus,Windows.Media.Capture.Frames,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCapture,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCaptureInitializationSettings,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCaptureSharingMode,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.MediaCaptureMemoryPreference,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+        [Windows.Media.Capture.StreamingCaptureMode,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+
+        $devices = Wait-WinRtOperation ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync([Windows.Devices.Enumeration.DeviceClass]::VideoCapture)) ([Windows.Devices.Enumeration.DeviceInformationCollection]) 5000
+        $target = $devices | Where-Object { $_.Id -match $vidPidPattern } | Select-Object -First 1
+        if (-not $target) { $target = $devices | Where-Object { $_.Name -match '(?i)DelanCam' } | Select-Object -First 1 }
+        if (-not $target) { throw 'DelanCam1 is not visible to Windows Runtime camera enumeration.' }
+        $group = Wait-WinRtOperation ([Windows.Media.Capture.Frames.MediaFrameSourceGroup]::FromIdAsync($target.Id)) ([Windows.Media.Capture.Frames.MediaFrameSourceGroup]) 5000
+        if (-not $group) { throw 'No MediaFrameSourceGroup was found for DelanCam1.' }
+
+        $listCapture = New-ProbeCapture $group
+        $listSource = Get-ProbeSource $listCapture $group
+        $supported = @($listSource.SupportedFormats)
+        try { $listCapture.Dispose() } catch {}
+        $listCapture = $null
+        $script:formatProbePerformed = $true
+
+        $lines.Add("Formats offered by the device: $($supported.Count). Capture window per probed format: ${probeSeconds}s.")
+        $lines.Add('')
+        $lines.Add(('{0,-18} {1,-18} {2,-8} {3,-8} {4,6} {5,8}  {6}' -f 'Requested', 'Negotiated', 'SetFmt', 'Start', 'Frames', 'FirstMs', 'Error'))
+        $lines.Add(('-' * 96))
+
+        foreach ($want in $wanted) {
+            $fmt = $supported | Where-Object { (Get-ProbeLabel $_) -eq $want } | Select-Object -First 1
+            if (-not $fmt) {
+                $lines.Add(('{0,-18} {1}' -f $want, 'not offered by this device'))
+                continue
+            }
+            $row = @{ Negotiated = ''; SetFmt = ''; Start = ''; Frames = 0; FirstMs = ''; Error = '' }
+            $mc = $null
+            $reader = $null
+            try {
+                $mc = New-ProbeCapture $group
+                $src = Get-ProbeSource $mc $group
+                try { Wait-WinRtAction ($src.SetFormatAsync($fmt)) 5000; $row.SetFmt = 'ok' }
+                catch { $row.SetFmt = 'FAILED'; $row.Error = $_.Exception.Message }
+                $row.Negotiated = Get-ProbeLabel $src.CurrentFormat
+                $reader = Wait-WinRtOperation ($mc.CreateFrameReaderAsync($src)) ([Windows.Media.Capture.Frames.MediaFrameReader]) 8000
+                $startStatus = Wait-WinRtOperation ($reader.StartAsync()) ([Windows.Media.Capture.Frames.MediaFrameReaderStartStatus]) 8000
+                $row.Start = $startStatus.ToString()
+                if ($startStatus.ToString() -eq 'Success') {
+                    $lastTs = -1.0
+                    $t0 = [DateTime]::UtcNow
+                    $deadline = $t0.AddSeconds($probeSeconds)
+                    while ([DateTime]::UtcNow -lt $deadline) {
+                        $frame = $null
+                        try {
+                            $frame = $reader.TryAcquireLatestFrame()
+                            if ($null -ne $frame) {
+                                $tsRaw = $frame.SystemRelativeTime
+                                $tsMs = $null
+                                if ($tsRaw -is [TimeSpan]) { $tsMs = $tsRaw.TotalMilliseconds }
+                                elseif ($null -ne $tsRaw) {
+                                    try { $tsMs = ([TimeSpan]$tsRaw.Value).TotalMilliseconds }
+                                    catch { try { $tsMs = ([TimeSpan]$tsRaw).TotalMilliseconds } catch {} }
+                                }
+                                $isNew = $false
+                                if ($null -ne $tsMs) { if ($tsMs -ne $lastTs) { $isNew = $true; $lastTs = $tsMs } }
+                                else { $isNew = $true }
+                                if ($isNew) {
+                                    $row.Frames++
+                                    if ($row.FirstMs -eq '') { $row.FirstMs = [int]([DateTime]::UtcNow - $t0).TotalMilliseconds }
+                                }
+                            }
+                        }
+                        catch { if ($row.Error -eq '') { $row.Error = $_.Exception.Message } }
+                        finally { if ($null -ne $frame) { try { $frame.Dispose() } catch {} } }
+                        Start-Sleep -Milliseconds 2
+                    }
+                }
+            }
+            catch { if ($row.Error -eq '') { $row.Error = $_.Exception.Message } }
+            finally {
+                if ($reader) { try { Wait-WinRtAction ($reader.StopAsync()) 5000 } catch {}; try { $reader.Dispose() } catch {} }
+                if ($mc) { try { $mc.Dispose() } catch {} }
+            }
+            $lines.Add(('{0,-18} {1,-18} {2,-8} {3,-8} {4,6} {5,8}  {6}' -f $want, $row.Negotiated, $row.SetFmt, $row.Start, $row.Frames, $row.FirstMs, $row.Error))
+            $script:formatProbeRows++
+            if ($want -like 'MJPG*') { $script:formatProbeMjpgFrames += $row.Frames } else { $script:formatProbeRawFrames += $row.Frames }
+            Start-Sleep -Milliseconds 300
+        }
+
+        $lines.Add('')
+        $lines.Add("MJPG frames total: $script:formatProbeMjpgFrames   NV12/YUY2 frames total: $script:formatProbeRawFrames")
+        if ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -gt 0) {
+            $lines.Add('Reading: the camera streams normally in raw formats but every MJPEG request yields nothing. That is a')
+            $lines.Add('Windows-side MJPEG decoding problem (see media-foundation.txt), not a camera or USB fault. Apps that')
+            $lines.Add('pick raw formats (Windows Camera) keep working; apps that ask for MJPEG (OpenTrack, AITrack) get nothing.')
+        }
+        elseif ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -eq 0) {
+            $lines.Add('Reading: no format delivered frames. This points to USB, cable, driver or hardware, or to another')
+            $lines.Add('application holding the camera.')
+        }
+        else {
+            $lines.Add('Reading: frames arrived in MJPEG and raw formats. The Media Foundation path to this camera is healthy.')
+        }
+    }
+    catch {
+        $realEx = $_.Exception
+        while ($realEx.InnerException) { $realEx = $realEx.InnerException }
+        $script:formatProbeError = $realEx.Message
+        $lines.Add("Probe error: $($realEx.Message)")
+        Record-Error -Step 'DelanCam1 format probe' -Err $_
+    }
+
+    $lines | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+$script:mftHardwareDecoders = $null
+$script:mftVendorMjpeg = @()
+$script:mftMissingDll = @()
+Run-Step 'Media Foundation decoders' {
+    $path = Join-Path $work 'media-foundation.txt'
+    $lines = New-Object System.Collections.Generic.List[string]
+    $hwItem = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT' -ErrorAction SilentlyContinue
+    $enableDecoders = $null
+    if ($hwItem -and $null -ne $hwItem.EnableDecoders) { $enableDecoders = [int]$hwItem.EnableDecoders }
+    $script:mftHardwareDecoders = $enableDecoders
+    $decodersText = 'not set (default: enabled)'
+    if ($null -ne $enableDecoders) { $decodersText = [string]$enableDecoders }
+    $encodersText = 'not set (default: enabled)'
+    if ($hwItem -and $null -ne $hwItem.EnableEncoders) { $encodersText = [string]$hwItem.EnableEncoders }
+    $lines.Add("HardwareMFT EnableDecoders: $decodersText")
+    $lines.Add("HardwareMFT EnableEncoders: $encodersText")
+    $frameServer = Get-Service -Name FrameServer -ErrorAction SilentlyContinue
+    $frameServerText = 'not found'
+    if ($frameServer) { $frameServerText = [string]$frameServer.Status }
+    $lines.Add("Windows Camera Frame Server service: $frameServerText")
+    $lines.Add('')
+    $lines.Add('Registered Media Foundation video decoders (category VIDEO_DECODER), 64-bit and 32-bit views.')
+    $lines.Add('"vendor" means the DLL belongs to a driver package or a non-Microsoft vendor; when hardware decoders are')
+    $lines.Add('enabled such decoders take precedence over the Microsoft ones. Only names, identifiers and file paths are listed.')
+    $lines.Add('')
+
+    $views = @(
+        @{ Name = '64-bit'; Root = 'HKLM:\SOFTWARE\Classes' },
+        @{ Name = '32-bit'; Root = 'HKLM:\SOFTWARE\Classes\WOW6432Node' }
+    )
+    foreach ($view in $views) {
+        $catPath = Join-Path $view.Root 'MediaFoundation\Transforms\Categories\d6c02d4b-6833-45b4-971a-05a4b04bab91'
+        if (-not (Test-Path -LiteralPath $catPath)) { $catPath = Join-Path $view.Root 'MediaFoundation\Transforms\Categories\{d6c02d4b-6833-45b4-971a-05a4b04bab91}' }
+        $members = @(Get-ChildItem -LiteralPath $catPath -ErrorAction SilentlyContinue)
+        $lines.Add("===== $($view.Name) view: $($members.Count) video decoder(s) =====")
+        foreach ($member in $members) {
+            $id = $member.PSChildName.Trim('{}')
+            $name = (Get-ItemProperty -LiteralPath (Join-Path $view.Root ("MediaFoundation\Transforms\" + $id)) -ErrorAction SilentlyContinue).'(default)'
+            if (-not $name) { $name = (Get-ItemProperty -LiteralPath (Join-Path $view.Root ("MediaFoundation\Transforms\{" + $id + "}")) -ErrorAction SilentlyContinue).'(default)' }
+            if (-not $name) { $name = '(unnamed)' }
+            $dll = (Get-ItemProperty -LiteralPath (Join-Path $view.Root ("CLSID\{" + $id + "}\InprocServer32")) -ErrorAction SilentlyContinue).'(default)'
+            $state = ''
+            if (-not $dll) { $state = 'no InprocServer32' }
+            else {
+                $dllClean = [Environment]::ExpandEnvironmentVariables(([string]$dll).Trim().Trim('"'))
+                if (-not (Test-Path -LiteralPath $dllClean)) { $state = 'DLL MISSING' }
+                elseif ($dllClean -match '(?i)\\DriverStore\\FileRepository\\' -or $dllClean -notmatch '(?i)^[a-z]:\\Windows\\(System32|SysWOW64)\\[^\\]+$' -or $name -match '(?i)intel|nvidia|amd |radeon|qualcomm|snapdragon|mediatek') { $state = 'vendor' }
+                else { $state = 'Windows' }
+            }
+            $lines.Add(('{0,-45} {1,-16} {2}  {3}' -f $name, $state, ('{' + $id + '}'), $dll))
+            if ($state -eq 'DLL MISSING') { $script:mftMissingDll += "$name ($($view.Name))" }
+            if ($state -eq 'vendor' -and $name -match '(?i)jpeg|jpg') { $script:mftVendorMjpeg += "$name ($($view.Name))" }
+        }
+        $lines.Add('')
+    }
+    $lines | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+$script:dshowMissingCore = @()
+$script:dshowVirtualCameras = @()
+$script:dshowDeadFilters = @()
+$script:dshowVendorFilters = @()
+$script:dshowPreferredMjpgIssue = $null
+$script:dshowDoNotUse = @()
+$script:vfwMissing64 = @()
+$script:vfwMissing32 = @()
+Run-Step 'DirectShow registrations' {
+    $path = Join-Path $work 'directshow.txt'
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('DirectShow registrations relevant to camera capture, 64-bit and 32-bit views. OpenTrack and AITrack build')
+    $lines.Add('their camera graph on these. Only names, identifiers and file paths are listed.')
+    $lines.Add('')
+
+    function Get-DsInproc {
+        param($Root, $Clsid)
+        return (Get-ItemProperty -LiteralPath (Join-Path $Root ("CLSID\" + $Clsid + "\InprocServer32")) -ErrorAction SilentlyContinue).'(default)'
+    }
+    function Get-DsFileState {
+        param($Dll)
+        if (-not $Dll) { return 'no InprocServer32' }
+        $clean = [Environment]::ExpandEnvironmentVariables(([string]$Dll).Trim().Trim('"'))
+        if (-not (Test-Path -LiteralPath $clean)) { return 'DLL MISSING' }
+        if ($clean -match '(?i)^[a-z]:\\Windows\\') { return 'Windows' }
+        return 'third-party location'
+    }
+
+    $views = @(
+        @{ Name = '64-bit'; Classes = 'HKLM:\SOFTWARE\Classes'; Software = 'HKLM:\SOFTWARE' },
+        @{ Name = '32-bit'; Classes = 'HKLM:\SOFTWARE\Classes\WOW6432Node'; Software = 'HKLM:\SOFTWARE\WOW6432Node' }
+    )
+    $core = @(
+        @{ N = 'KS proxy (ksproxy.ax)'; C = '{17CCA71B-ECD7-11D0-B908-00A0C9223196}' },
+        @{ N = 'SampleGrabber (qedit.dll)'; C = '{C1F400A0-3F08-11d3-9F0B-006008039E37}' },
+        @{ N = 'FilterGraph (quartz.dll)'; C = '{e436ebb3-524f-11ce-9f53-0020af0ba770}' },
+        @{ N = 'MJPEG Decompressor (quartz.dll)'; C = '{301056D0-6DFF-11d2-9EEB-006008039E37}' },
+        @{ N = 'AVI Decompressor (quartz.dll)'; C = '{CF49D4E0-1115-11CE-B03A-0020AF0BA770}' },
+        @{ N = 'Color Space Converter (quartz.dll)'; C = '{1643E180-90F5-11CE-97D5-00AA0055595A}' },
+        @{ N = 'CaptureGraphBuilder2 (qcap.dll)'; C = '{BF87B6E1-8C27-11d0-B3F0-00AA003761C5}' },
+        @{ N = 'Smart Tee (qcap.dll)'; C = '{CC58E280-8AA1-11d1-B3F1-00AA003761C5}' },
+        @{ N = 'SystemDeviceEnum (devenum.dll)'; C = '{62BE5D10-60EB-11d0-BD3B-00A0C911CE86}' }
+    )
+    $expectedVfw = @{ 'vidc.cvid' = 'iccvid.dll'; 'vidc.i420' = 'iyuv_32.dll'; 'vidc.iyuv' = 'iyuv_32.dll'; 'vidc.mrle' = 'msrle32.dll'; 'vidc.msvc' = 'msvidc32.dll'; 'vidc.uyvy' = 'msyuv.dll'; 'vidc.yuy2' = 'msyuv.dll'; 'vidc.yvu9' = 'tsbyuv.dll'; 'vidc.yvyu' = 'msyuv.dll' }
+    $ignoreDead = '(?i)^(Line 21 Decoder|Overlay Mixer|Overlay Mixer2|VBI Surface Allocator)$'
+
+    foreach ($view in $views) {
+        $lines.Add("################ $($view.Name) view ################")
+        $lines.Add('')
+        $lines.Add('--- Core components ---')
+        foreach ($c in $core) {
+            $dll = Get-DsInproc $view.Classes $c.C
+            $state = Get-DsFileState $dll
+            $treatAs = (Get-ItemProperty -LiteralPath (Join-Path $view.Classes ("CLSID\" + $c.C + "\TreatAs")) -ErrorAction SilentlyContinue).'(default)'
+            $treatText = ''
+            if ($treatAs) { $treatText = "  TreatAs=$treatAs" }
+            $lines.Add(('{0,-38} {1,-45} {2}{3}' -f $c.N, $dll, $state, $treatText))
+            if (-not $dll -or $state -eq 'DLL MISSING') { $script:dshowMissingCore += "$($c.N) [$($view.Name)]" }
+            if ($treatAs) { $script:dshowMissingCore += "$($c.N) redirected by TreatAs to $treatAs [$($view.Name)]" }
+        }
+        $lines.Add('')
+        $lines.Add('--- Software/virtual cameras registered as video input devices (real USB cameras are never listed here) ---')
+        $ghosts = @(Get-ChildItem -LiteralPath (Join-Path $view.Classes 'CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance') -ErrorAction SilentlyContinue)
+        if ($ghosts.Count -eq 0) { $lines.Add('(none)') }
+        foreach ($g in $ghosts) {
+            $p = Get-ItemProperty -LiteralPath $g.PSPath -ErrorAction SilentlyContinue
+            $clsid = $g.PSChildName
+            if ($p.CLSID) { $clsid = [string]$p.CLSID }
+            $dll = Get-DsInproc $view.Classes $clsid
+            $state = Get-DsFileState $dll
+            $lines.Add(('{0,-40} {1,-40} {2}  {3}' -f $p.FriendlyName, $clsid, $dll, $state))
+            $script:dshowVirtualCameras += "$($p.FriendlyName) [$($view.Name), $state]"
+        }
+        $lines.Add('')
+        $lines.Add('--- DirectShow filters whose DLL is missing or lives outside the Windows folder ---')
+        $filters = @(Get-ChildItem -LiteralPath (Join-Path $view.Classes 'CLSID\{083863F1-70DE-11d0-BD40-00A0C911CE86}\Instance') -ErrorAction SilentlyContinue)
+        $lines.Add("Registered filters: $($filters.Count)")
+        $flagged = 0
+        foreach ($f in $filters) {
+            $p = Get-ItemProperty -LiteralPath $f.PSPath -ErrorAction SilentlyContinue
+            $clsid = $f.PSChildName
+            if ($p.CLSID) { $clsid = [string]$p.CLSID }
+            $dll = Get-DsInproc $view.Classes $clsid
+            $state = Get-DsFileState $dll
+            if ($state -eq 'Windows') { continue }
+            $flagged++
+            $lines.Add(('{0,-45} {1,-40} {2}  {3}' -f $p.FriendlyName, $clsid, $dll, $state))
+            if ($state -eq 'DLL MISSING' -or $state -eq 'no InprocServer32') {
+                if ([string]$p.FriendlyName -notmatch $ignoreDead) { $script:dshowDeadFilters += "$($p.FriendlyName) [$($view.Name)]" }
+            }
+            else {
+                $script:dshowVendorFilters += "$($p.FriendlyName) [$($view.Name)]"
+            }
+        }
+        if ($flagged -eq 0) { $lines.Add('(all registered filters point to existing files inside the Windows folder)') }
+        $lines.Add('')
+        $lines.Add('--- Preferred decoder for MJPG (HKLM\SOFTWARE\Microsoft\DirectShow\Preferred) ---')
+        $pref = Get-ItemProperty -LiteralPath (Join-Path $view.Software 'Microsoft\DirectShow\Preferred') -ErrorAction SilentlyContinue
+        $mjpgTarget = $null
+        if ($pref) { $mjpgTarget = $pref.'{47504A4D-0000-0010-8000-00AA00389B71}' }
+        if ($mjpgTarget) {
+            $tName = (Get-ItemProperty -LiteralPath (Join-Path $view.Classes ("CLSID\" + $mjpgTarget)) -ErrorAction SilentlyContinue).'(default)'
+            $tDll = Get-DsInproc $view.Classes $mjpgTarget
+            $tState = Get-DsFileState $tDll
+            $lines.Add("MJPG -> $mjpgTarget  $tName  ($tState)")
+            if ($tState -ne 'Windows' -or ([string]$mjpgTarget) -notmatch '(?i)^\{301056D0-6DFF-11D2-9EEB-006008039E37\}$') {
+                $script:dshowPreferredMjpgIssue = "$mjpgTarget $tName ($tState) [$($view.Name)]"
+            }
+        }
+        else { $lines.Add('MJPG -> not set (Windows default applies)') }
+        $lines.Add('')
+        $lines.Add('--- DoNotUse (filters DirectShow is told to skip) ---')
+        $dnu = Get-ItemProperty -LiteralPath (Join-Path $view.Software 'Microsoft\DirectShow\DoNotUse') -ErrorAction SilentlyContinue
+        $dnuCount = 0
+        if ($dnu) {
+            foreach ($prop in ($dnu.PSObject.Properties | Where-Object { $_.Name -match '^\{' })) {
+                $dnuCount++
+                $dn = (Get-ItemProperty -LiteralPath (Join-Path $view.Classes ("CLSID\" + $prop.Name)) -ErrorAction SilentlyContinue).'(default)'
+                $lines.Add("$($prop.Name)  $dn")
+                $script:dshowDoNotUse += "$($prop.Name) $dn [$($view.Name)]"
+            }
+        }
+        if ($dnuCount -eq 0) { $lines.Add('(empty)') }
+        $lines.Add('')
+        $lines.Add('--- VFW video codecs (Drivers32 vidc.* entries) ---')
+        $d32 = Get-ItemProperty -LiteralPath (Join-Path $view.Software 'Microsoft\Windows NT\CurrentVersion\Drivers32') -ErrorAction SilentlyContinue
+        $present = @{}
+        if ($d32) {
+            foreach ($prop in ($d32.PSObject.Properties | Where-Object { $_.Name -match '(?i)^vidc\.' })) {
+                $present[$prop.Name.ToLower()] = [string]$prop.Value
+                $lines.Add(('{0,-14} {1}' -f $prop.Name, $prop.Value))
+            }
+        }
+        $missing = @($expectedVfw.Keys | Where-Object { -not $present.ContainsKey($_) } | Sort-Object)
+        if ($missing.Count -gt 0) { $lines.Add('Missing stock entries: ' + ($missing -join ', ')) }
+        if ($view.Name -eq '64-bit') { $script:vfwMissing64 = $missing } else { $script:vfwMissing32 = $missing }
+        $lines.Add('')
+    }
+    $cachePresent = Test-Path -LiteralPath 'HKCU:\Software\Microsoft\ActiveMovie\devenum'
+    $lines.Add("Per-user DirectShow device cache (HKCU\Software\Microsoft\ActiveMovie\devenum) present: $cachePresent")
+    $lines | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+$script:softwareCount = 0
+$script:softwareCodecPacks = @()
+$script:softwareCleaners = @()
+$script:softwareVirtualCams = @()
+$script:softwareSecuritySuites = @()
+$script:softwarePs3EyeTooling = @()
+$script:softwareTracking = @()
+$script:softwareInjectors = @()
+Run-Step 'Installed software' {
+    $path = Join-Path $work 'installed-software.txt'
+    $uninstallPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $apps = @(Get-ItemProperty -Path $uninstallPaths -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayName } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate |
+        Sort-Object DisplayName -Unique)
+    $script:softwareCount = $apps.Count
+
+    foreach ($app in $apps) {
+        $n = [string]$app.DisplayName
+        if ($n -match '(?i)k-lite|ffdshow|shark007|cccp|codec pack|lav filters|xvid|divx') { $script:softwareCodecPacks += $n }
+        if ($n -match '(?i)driver booster|ccleaner|advanced systemcare|iobit|glary|wise care|shutup10|debloat|winutil|reg organizer|jv16') { $script:softwareCleaners += $n }
+        if ($n -match '(?i)nikon webcam|webcam utility|streamlabs|manycam|xsplit|snap camera|nvidia broadcast|imyfone|magicmic|voicemod|virtual camera|virtualcam|obs studio|droidcam|ivcam|chromacam|epoccam') { $script:softwareVirtualCams += $n }
+        if ($n -match '(?i)kaspersky|eset|bitdefender|norton|mcafee|avast|avg (anti|internet|ultimate)|trend micro|hp wolf|malwarebytes|sophos|webroot|f-secure|g data|panda security|avira') { $script:softwareSecuritySuites += $n }
+        if ($n -match '(?i)cl-eye|code laboratories|libusb|zadig') { $script:softwarePs3EyeTooling += $n }
+        if ($n -match '(?i)opentrack|aitrack|facetracknoir|tobii|trackir|track ir|eyeware|smoothtrack') { $script:softwareTracking += $n }
+        if ($n -match '(?i)nahimic|sonic studio|afterburner|rivatuner|razer cortex') { $script:softwareInjectors += $n }
+    }
+
+    $hot = '(?i)camera|webcam|\bcam\b|codec|k-lite|ffdshow|\blav\b|shark007|cccp|xvid|divx|nikon|streamlabs|\bobs\b|manycam|xsplit|snap camera|broadcast|imyfone|magicmic|voicemod|virtual|opentrack|aitrack|facetrack|tobii|trackir|eyeware|logitech|g hub|razer|synapse|cortex|corsair|icue|msi center|dragon center|afterburner|rivatuner|nahimic|sonic studio|oculus|steamvr|discord|zoom|teams|skype|cl-eye|code laboratories|libusb|zadig|driver booster|ccleaner|advanced systemcare|iobit|glary|wise care|shutup|debloat|winutil|kaspersky|eset|bitdefender|norton|mcafee|avast|avg |trend micro|malwarebytes|hp wolf'
+    $highlights = @($apps | Where-Object { ([string]$_.DisplayName) -match $hot })
+
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add("Installed programs: $($apps.Count). Only names, versions, publishers and install dates are listed.")
+    $out.Add('Camera, codec, tracking, overlay, security and system-cleaner software comes first because these are the')
+    $out.Add('usual sources of camera conflicts; the full list follows.')
+    $out.Add('')
+    $out.Add("===== Highlights ($($highlights.Count)) =====")
+    if ($highlights.Count -gt 0) {
+        ($highlights | Format-Table DisplayName, DisplayVersion, Publisher, InstallDate -AutoSize | Out-String -Width 400) -split "`r?`n" | ForEach-Object { $out.Add($_) }
+    }
+    else { $out.Add('(none matched)') }
+    $out.Add("===== Full list ($($apps.Count)) =====")
+    ($apps | Format-Table DisplayName, DisplayVersion, Publisher, InstallDate -AutoSize | Out-String -Width 400) -split "`r?`n" | ForEach-Object { $out.Add($_) }
+    $out | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+$script:uptimeDays = -1
+$script:fastStartup = $null
+$script:pendingReboot = $false
+Run-Step 'Restart state' {
+    $path = Join-Path $work 'restart-state.txt'
+    $os = Get-CimInstance Win32_OperatingSystem
+    $uptime = (Get-Date) - $os.LastBootUpTime
+    $script:uptimeDays = [int][math]::Floor($uptime.TotalDays)
+    $hiber = (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction SilentlyContinue).HiberbootEnabled
+    $script:fastStartup = $hiber
+    $pendWU = Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+    $pendCBS = Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+    $pendRename = $null -ne (Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -ErrorAction SilentlyContinue).PendingFileRenameOperations
+    $script:pendingReboot = [bool]($pendWU -or $pendCBS -or $pendRename)
+    @(
+        "Last boot: $($os.LastBootUpTime)",
+        "Time since last boot: $([int]$uptime.TotalDays) day(s) $($uptime.Hours) hour(s)",
+        "Fast Startup (HiberbootEnabled): $hiber   (1 means 'Shut down' hibernates the kernel; only 'Restart' fully reloads drivers)",
+        "Pending reboot: WindowsUpdate=$pendWU  ComponentServicing=$pendCBS  PendingFileRename=$pendRename"
+    ) | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
 $script:problemDevices = @()
 Run-Step 'Problem devices' {
     $path = Join-Path $work 'problem-devices.txt'
@@ -1021,7 +1518,7 @@ Run-Step 'USB power policy' {
     (& $powercfg /getactivescheme 2>&1) | Out-String -Width 500 | Add-Content -LiteralPath $path -Encoding UTF8
     "" | Add-Content -LiteralPath $path -Encoding UTF8
     "===== USB power settings =====" | Add-Content -LiteralPath $path -Encoding UTF8
-    (& $powercfg /query SCHEME_CURRENT SUB_USB 2>&1) | Out-String -Width 500 | Add-Content -LiteralPath $path -Encoding UTF8
+    (& $powercfg /query SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 2>&1) | Out-String -Width 500 | Add-Content -LiteralPath $path -Encoding UTF8
 }
 
 Run-Step 'Recent matching PnP events' {
@@ -1041,8 +1538,16 @@ Run-Step 'Recent matching PnP events' {
         $start = (Get-Date).AddDays(-14)
         $events = @(Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=$start} -ErrorAction Stop |
             Where-Object { $_.ProviderName -match '(?i)Kernel-PnP|UserPnp|DriverFrameworks' } |
+            ForEach-Object {
+                $message = ''
+                try { $message = [string]$_.Message } catch {}
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    try { $message = (($_.Properties | ForEach-Object { [string]$_.Value }) -join ' ') } catch {}
+                }
+                [PSCustomObject]@{ TimeCreated = $_.TimeCreated; Id = $_.Id; Level = $_.LevelDisplayName; Provider = $_.ProviderName; Text = $message }
+            } |
             Where-Object {
-                $message = [string]$_.Message
+                $message = [string]$_.Text
                 $matched = $false
                 foreach ($needle in $needles) {
                     if ($message.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
@@ -1055,7 +1560,7 @@ Run-Step 'Recent matching PnP events' {
         }
         else {
             $events |
-                Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+                Select-Object TimeCreated, Id, Level, Provider, Text |
                 Format-List |
                 Out-String -Width 500 |
                 Set-Content -LiteralPath $path -Encoding UTF8
@@ -1172,7 +1677,15 @@ Run-Step 'Diagnostic summary' {
             $summary.Add('REVIEW: DelanCam1 delivered frames, but none carried a usable timestamp, so frame-rate metrics could not be measured. See stream-test.txt.')
         }
         elseif ($script:streamTestFramesReceived -eq 0) {
-            $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer.')
+            if ($script:formatProbePerformed -and $script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -gt 0) {
+                $summary.Add("REVIEW HIGH: DelanCam1 delivered zero MJPEG frames, yet $script:formatProbeRawFrames NV12/YUY2 frame(s) arrived in the format probe. The camera and USB link work; MJPEG decoding inside Windows Media Foundation is broken on this PC. See FORMAT PROBE and WINDOWS VIDEO PIPELINE below.")
+            }
+            elseif ($script:formatProbePerformed -and $script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -eq 0) {
+                $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames in the stream test and in every probed format. This points to USB, cable, driver or hardware, or to another application holding the camera, not to the application layer.')
+            }
+            else {
+                $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer. See format-probe.txt for whether the failure is format-specific.')
+            }
         }
         elseif ($script:streamTestFramesReceived -lt 5) {
             $summary.Add("REVIEW HIGH: The stream delivered only $script:streamTestFramesReceived frame(s) in the capture window (first frame after $script:streamTestFirstFrameDelayMs ms). Too few to measure a working video feed. This usually points to USB, driver or hardware; extreme low light can also slow frame delivery this much on an IR camera, so check the sampled brightness below before ruling that out.")
@@ -1207,6 +1720,116 @@ Run-Step 'Diagnostic summary' {
             $summary.Add('REVIEW: The stream stopped delivering frames well before the end of the capture window. Webcam-protection features in security software can cut camera streams mid-use; USB or driver faults can too. Compare with the security products listed below.')
         }
         $summary.Add('Content analysis flags frozen/identical frames but cannot judge whether a varying image looks correct. See stream-test.txt for full detail.')
+    }
+
+    $summary.Add('')
+    $summary.Add('FORMAT PROBE')
+    if (-not $script:formatProbePerformed) {
+        if ($script:formatProbeError) { $summary.Add("Format probe did not run: $script:formatProbeError") }
+        else { $summary.Add('Format probe was skipped (DelanCam1 absent or not openable). See format-probe.txt.') }
+    }
+    else {
+        $summary.Add("MJPG frames: $script:formatProbeMjpgFrames, NV12/YUY2 frames: $script:formatProbeRawFrames across $script:formatProbeRows probed format(s), 2 s each.")
+        if ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -gt 0) {
+            $summary.Add('REVIEW HIGH: MJPEG delivers nothing while raw formats stream normally. The camera and USB link are fine; MJPEG decoding inside Windows Media Foundation is broken on this PC. Windows Camera (raw formats) keeps working, OpenTrack and AITrack (MJPEG) get no frames. Check WINDOWS VIDEO PIPELINE below for the decoder responsible.')
+        }
+        elseif ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -eq 0) {
+            $summary.Add('REVIEW HIGH: No probed format delivered frames. This points to USB, cable, driver or hardware, or to another application holding the camera.')
+        }
+        elseif ($script:formatProbeMjpgFrames -gt 0 -and $script:formatProbeRawFrames -gt 0) {
+            $summary.Add('Every probed format delivered frames: the Media Foundation path to this camera is healthy. If OpenTrack still cannot open the camera, the fault is in the DirectShow layer it uses; see WINDOWS VIDEO PIPELINE below.')
+        }
+        else {
+            $summary.Add('MJPEG delivered frames but the raw formats did not. Unusual; see format-probe.txt.')
+        }
+    }
+
+    $summary.Add('')
+    $summary.Add('WINDOWS VIDEO PIPELINE')
+    $pipelineFindings = 0
+    if ($script:mftVendorMjpeg.Count -gt 0) {
+        $pipelineFindings++
+        if ($null -eq $script:mftHardwareDecoders -or $script:mftHardwareDecoders -ne 0) {
+            $summary.Add('REVIEW HIGH: A vendor MJPEG decoder is registered in Media Foundation and hardware decoders are enabled: ' + ($script:mftVendorMjpeg -join ', ') + '. Such decoders are known to swallow every MJPEG frame while raw formats keep working. Compare with FORMAT PROBE. See media-foundation.txt.')
+        }
+        else {
+            $summary.Add('INFO: A vendor MJPEG decoder is registered in Media Foundation, but hardware decoders are disabled (EnableDecoders=0), so it is not used: ' + ($script:mftVendorMjpeg -join ', ') + '.')
+        }
+    }
+    if ($script:mftMissingDll.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW: Media Foundation decoder(s) registered with a missing DLL: ' + ($script:mftMissingDll -join ', ') + '.')
+    }
+    if ($script:dshowMissingCore.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW HIGH: DirectShow core component(s) missing or redirected: ' + ($script:dshowMissingCore -join '; ') + '. OpenTrack and AITrack build their camera graph on these. See directshow.txt.')
+    }
+    if ($script:dshowVirtualCameras.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW: Software/virtual cameras registered in DirectShow: ' + ($script:dshowVirtualCameras -join '; ') + '. They appear in OpenTrack''s camera list; an entry whose DLL is missing is a leftover of removed software.')
+    }
+    if ($script:dshowDeadFilters.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW HIGH: DirectShow filter(s) registered with missing files: ' + ($script:dshowDeadFilters -join '; ') + '. Dead codec registrations (for example LAV filters left behind by an uninstalled app) can stop MJPEG capture graphs from building.')
+    }
+    if ($script:dshowVendorFilters.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('INFO: Third-party DirectShow filters present: ' + (($script:dshowVendorFilters | Select-Object -First 8) -join '; ') + '.')
+    }
+    if ($script:dshowPreferredMjpgIssue) {
+        $pipelineFindings++
+        $summary.Add("REVIEW HIGH: The DirectShow preferred decoder for MJPG is not the Windows default: $script:dshowPreferredMjpgIssue. Codec packs set this; a target that no longer exists breaks every MJPG graph.")
+    }
+    if ($script:dshowDoNotUse.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW: DirectShow DoNotUse list blocks filter(s): ' + ($script:dshowDoNotUse -join '; ') + '.')
+    }
+    if ($script:vfwMissing64.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW HIGH: 64-bit VFW codec registrations missing from Drivers32: ' + ($script:vfwMissing64 -join ', ') + '. 64-bit DirectShow apps such as OpenTrack need vidc.yuy2 (msyuv.dll) to convert camera frames to RGB; without it the capture graph fails to build even with MJPEG off.')
+    }
+    if ($script:vfwMissing32.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW: 32-bit VFW codec registrations missing from Drivers32: ' + ($script:vfwMissing32 -join ', ') + '.')
+    }
+    if ($pipelineFindings -eq 0) {
+        $summary.Add('Media Foundation decoders, DirectShow registrations and VFW codecs look stock. See media-foundation.txt and directshow.txt.')
+    }
+
+    $summary.Add('')
+    $summary.Add('INSTALLED SOFTWARE')
+    $summary.Add("$script:softwareCount installed program(s) are listed in installed-software.txt.")
+    $softwareFindings = 0
+    if ($script:softwareCodecPacks.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('REVIEW HIGH: Codec pack(s) installed: ' + ($script:softwareCodecPacks -join ', ') + '. Codec packs replace DirectShow decoders and are the usual reason camera graphs fail on MJPEG or YUY2.')
+    }
+    if ($script:softwareCleaners.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('REVIEW: System cleaner / tweak tool(s) installed: ' + ($script:softwareCleaners -join ', ') + '. These remove registry entries such as VFW codecs and DirectShow filters; compare with WINDOWS VIDEO PIPELINE.')
+    }
+    if ($script:softwarePs3EyeTooling.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('REVIEW: PS3 Eye / libusb tooling installed: ' + ($script:softwarePs3EyeTooling -join ', ') + '. Ask whether the PS3 Eye driver procedure was ever applied to DelanCam1.')
+    }
+    if ($script:softwareVirtualCams.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('INFO: Virtual-camera or codec-bundling software installed: ' + ($script:softwareVirtualCams -join ', ') + '.')
+    }
+    if ($script:softwareSecuritySuites.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('INFO: Security suite(s) with possible webcam protection: ' + ($script:softwareSecuritySuites -join ', ') + '.')
+    }
+    if ($script:softwareInjectors.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('INFO: Overlay / process-injecting software installed: ' + ($script:softwareInjectors -join ', ') + '.')
+    }
+    if ($script:softwareTracking.Count -gt 0) {
+        $softwareFindings++
+        $summary.Add('INFO: Tracking software installed: ' + ($script:softwareTracking -join ', ') + '.')
+    }
+    if ($softwareFindings -eq 0) {
+        $summary.Add('No codec packs, system cleaners, virtual cameras, PS3 Eye tooling or security suites were found among installed programs.')
     }
 
     $summary.Add('')
@@ -1266,11 +1889,17 @@ Run-Step 'Diagnostic summary' {
     if ($script:cameraEventCount -gt 0) {
         $summary.Add("INFO: Collected $script:cameraEventCount event(s) from enabled camera-related Windows event logs.")
     }
+    if ($script:uptimeDays -ge 7) {
+        $summary.Add("INFO: $script:uptimeDays day(s) since the last full restart (Fast Startup = $script:fastStartup). Ask for Restart, not Shut down, before drawing conclusions from driver behaviour.")
+    }
+    if ($script:pendingReboot) {
+        $summary.Add('INFO: Windows reports a pending reboot (servicing not finished). Restart before judging driver or codec state.')
+    }
 
     $summary.Add('')
     $summary.Add('LIMITATION')
-    $summary.Add('This version opens DelanCam1, measures whether its video stream delivers frames at a steady rate, and checksums frames in memory to detect a frozen stream (see STREAM TEST above and stream-test.txt).')
-    $summary.Add('Content analysis cannot judge whether a varying image is visually correct.')
+    $summary.Add('This version opens DelanCam1, measures whether its video stream delivers frames at a steady rate, checksums frames in memory to detect a frozen stream, probes MJPG, NV12 and YUY2 separately, and inspects the Windows video-pipeline registrations (Media Foundation decoders, DirectShow filters, VFW codecs) and the installed-program list.')
+    $summary.Add('Content analysis cannot judge whether a varying image is visually correct, and registry findings are review flags for Delanclip Support, not proof of the cause.')
     $summary | Set-Content -LiteralPath (Join-Path $work 'SUMMARY.txt') -Encoding UTF8
 }
 

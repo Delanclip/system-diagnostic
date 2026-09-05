@@ -25,7 +25,18 @@ problem. It checks several layers that can affect a USB camera:
   the 640x480 @ 60 FPS format head tracking uses when the camera offers it, and
   reads live frames for a few seconds to measure whether frames arrive, how
   fast, whether the stream stalls, and whether frame content changes between
-  captures.
+  captures;
+- a per-format probe: opens the camera again for two seconds each in MJPG,
+  NV12 and YUY2 at 640x480 and counts frames, so a camera that delivers
+  nothing can be told apart from a Windows decoder problem that affects only
+  MJPEG;
+- the Windows video pipeline that camera software depends on: registered
+  Media Foundation video decoders and the hardware-decoder switch, DirectShow
+  core components, software/virtual camera registrations, filters with
+  missing files or third-party locations, the preferred MJPG decoder, the
+  DoNotUse list and VFW codec entries;
+- names, versions, publishers and install dates of installed programs;
+- time since the last restart, Fast Startup and pending-reboot state.
 
 The summary is intentionally conservative. A running application or installed
 security product is not automatically declared to be the cause. The report
@@ -33,9 +44,11 @@ marks evidence that Delanclip Support should review together.
 
 This version also opens DelanCam1 for a few seconds and measures whether its
 video stream delivers frames at a steady rate and whether frames change between
-captures (a frozen-stream check). It does not save any image or video data, and
-it cannot judge whether a changing image looks correct, so a clean stream test
-does not by itself prove that the picture is right.
+captures (a frozen-stream check), then probes MJPG, NV12 and YUY2 separately.
+It does not save any image or video data, and it cannot judge whether a
+changing image looks correct, so a clean stream test does not by itself prove
+that the picture is right. Registry findings about decoders and filters are
+review flags for Delanclip Support, not proof of a cause.
 
 ## Usage
 
@@ -97,7 +110,14 @@ conflicts are not always caused by the camera itself. This includes:
 - camera-related Windows services and event-log entries;
 - a technical summary of the DelanCam1 video stream obtained by briefly opening
   the camera: frame counts, measured frame rate, frame sizes, timestamps, frame
-  checksums and basic brightness statistics.
+  checksums and basic brightness statistics, plus per-format frame counts from
+  the probe;
+- names, versions, publishers and install dates of installed programs
+  (system-wide), because codec packs, virtual cameras and system-cleaner tools
+  are common causes of camera failures;
+- registry registrations of Media Foundation video decoders, DirectShow filters
+  and virtual cameras, and VFW codec entries: names, identifiers and file paths
+  only.
 
 Per-application camera access registry paths can contain a Windows user profile
 name. The tool redacts that profile component before writing the report.
@@ -125,6 +145,11 @@ It contains:
 | `delancam-pnp.txt` | Device Manager/PnP status, service and `ConfigManagerErrorCode` |
 | `usb-path.txt` | DelanCam1 parent-device chain and USB location paths |
 | `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened |
+| `format-probe.txt` | Frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with the negotiated format and any error per row |
+| `media-foundation.txt` | Windows hardware-decoder switch (`HardwareMFT`), Frame Server service state, and every registered Media Foundation video decoder with name, identifier, DLL path and whether it is a Windows or vendor component |
+| `directshow.txt` | DirectShow core component registrations, software/virtual cameras registered as video input devices, filters whose DLL is missing or outside the Windows folder, the preferred MJPG decoder, the DoNotUse list and VFW `vidc.*` codec entries, for the 64-bit and 32-bit registry views |
+| `installed-software.txt` | Installed programs (name, version, publisher, install date) with camera/codec/tracking/security/cleaner-related entries listed first |
+| `restart-state.txt` | Time since the last boot, Fast Startup setting and pending-reboot indicators |
 | `problem-devices.txt` | System-wide PnP devices with non-zero Windows error codes |
 | `security-products.txt` | Antivirus products registered with Windows Security Center |
 | `defender-status.txt` | Selected Microsoft Defender protection-status fields |
@@ -177,6 +202,22 @@ legitimately produce identical, essentially black frames - the brightness
 statistics let the report tell that apart from a stream frozen on a detailed
 image. The pixel data itself is discarded immediately after these numbers are
 computed.
+
+The per-format probe reuses the same Windows Runtime path once per format, two
+seconds each, and keeps only frame counts. The reason it exists: OpenTrack and
+similar trackers request MJPEG, while Windows Camera picks a raw format such
+as NV12. A vendor MJPEG decoder registered in Media Foundation (graphics
+drivers ship them) can silently deliver no frames at all, which then looks
+exactly like a dead camera in the stream test although Windows Camera still
+shows a picture. The probe separates those two cases.
+
+The Media Foundation, DirectShow and VFW checks read registry registrations
+only (names, identifiers, file paths and whether the file exists). OpenTrack
+and AITrack build their camera graph on DirectShow; leftover registrations of
+uninstalled codec packs or virtual cameras, or VFW codec entries removed by
+system-cleaner tools, stop that graph from building even though the camera
+itself works. The installed-program list exists for the same reason: it shows
+codec packs, virtual cameras and cleaner tools that explain such leftovers.
 
 Windows can deny camera access through privacy settings or policy, and Microsoft
 Defender exposes protection status through Windows PowerShell. Those system
