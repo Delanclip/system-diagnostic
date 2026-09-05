@@ -107,6 +107,24 @@ function Get-InprocServer {
     return (Get-RegValue (Join-Path $ClassesRoot ("CLSID\" + $Clsid + "\InprocServer32")) '(default)')
 }
 
+function Test-FirstPartyMicrosoft {
+    # True only for Windows' own binaries: signed by Microsoft itself and not shipped inside a vendor
+    # driver package. WHQL-signed vendor files (for example NVIDIA MFTs) carry the signer
+    # 'Microsoft Windows Hardware Compatibility Publisher' and live under DriverStore, so they count as third-party.
+    param([string]$Signer, [string]$Path)
+    if ($Signer -notmatch '^Microsoft (Windows|Corporation|Windows Publisher)( \[.*\])?$') { return $false }
+    if ($Path -and $Path -match '(?i)DriverStore\\FileRepository') { return $false }
+    return $true
+}
+
+function Get-EventText {
+    # Some providers (Kernel-PnP among them) fail to render Message in certain contexts; fall back to raw properties.
+    param($E)
+    $t = $E.Message
+    if (-not $t) { try { $t = (($E.Properties | ForEach-Object { $_.Value }) -join ' ') } catch {} }
+    return [string]$t
+}
+
 function Get-UserHives {
     # Returns loaded per-user hives (SID -> profile path/name). Works from SYSTEM and from a user session.
     $list = @()
@@ -289,7 +307,7 @@ Invoke-Section '01-system.txt' {
     (powercfg /getactivescheme 2>&1)
     ''
     'USB selective suspend (current scheme):'
-    (powercfg /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb50f7e36c 2>&1 | Select-String 'Power Setting Index|Current')
+    (powercfg /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb50f7e36c 2>&1)
     ''
     'Last 15 hotfixes:'
     (Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 15 HotFixID, Description, InstalledOn | Format-Table -AutoSize)
@@ -297,7 +315,7 @@ Invoke-Section '01-system.txt' {
     if ($uptime.TotalDays -ge 7) { Add-Flag ("Uptime {0} days without a real restart (Fast Startup = {1}). Ask for Restart, not Shut down." -f [int]$uptime.TotalDays, $hiber) }
     if ($pendWU -or $pendCBS -or $pendRename) { Add-Flag 'Windows reports a pending reboot (servicing not finished). Restart before judging anything.' }
     $bd = $bios.ReleaseDate
-    if ($board.Product -match 'B550|X570|A520|B450|X470' -and $bd -and $bd -lt (Get-Date '2021-06-01')) { Add-Flag ("AMD 400/500-series board with BIOS from {0}: pre-AGESA 1.2.0.2 firmware had known USB dropouts; a BIOS update is worth suggesting." -f $bd.ToString('yyyy-MM-dd')) }
+    if ($board.Product -match 'B550|X570|A520|B450|X470' -and $bd -and $bd -lt (Get-Date '2021-06-01')) { Add-Note ("AMD 400/500-series board with BIOS from {0}: pre-AGESA 1.2.0.2 firmware had known USB dropouts; a BIOS update is worth suggesting if USB symptoms remain." -f $bd.ToString('yyyy-MM-dd')) }
 }
 
 # 02 cameras / PnP -----------------------------------------------------------
@@ -316,7 +334,8 @@ Invoke-Section '02-cameras-pnp.txt' {
                 '{0,-40} {1}' -f ($k -replace '^DEVPKEY_Device_', ''), $val
             }
         }
-        if ($d.InstanceId -match $vidPidPattern) {
+        if ($d.InstanceId -match $vidPidPattern -and $d.InstanceId -match '(?i)&MI_\d\d\\') {
+            # Only the camera interface (MI_00) is checked; the composite parent legitimately runs on usbccgp.
             $stack = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_Stack' -ErrorAction SilentlyContinue).Data
             $stackText = ($stack -join ' ')
             if ($stackText -and $stackText -notmatch 'usbvideo') { Add-Flag ("DelanCam1 is not bound to usbvideo (stack: {0}). Wrong driver (libusb/WinUSB/other) on the camera." -f $stackText) }
@@ -329,6 +348,7 @@ Invoke-Section '02-cameras-pnp.txt' {
         ''
     }
     if (-not ($devs | Where-Object { $_.InstanceId -match $vidPidPattern })) { Add-Flag 'DelanCam1 (VID_0120&PID_1234) is not present as a PnP device right now.' }
+    elseif (-not ($devs | Where-Object { $_.InstanceId -match $vidPidPattern -and $_.InstanceId -match '(?i)&MI_\d\d\\' })) { Add-Flag 'DelanCam1 composite device is present but exposes no MI_00 camera interface: the composite parent is bound to a non-standard driver (libusbK/WinUSB via Zadig) instead of usbccgp.' }
 
     'Class-level filter drivers:'
     foreach ($cls in @(@{ N = 'Camera'; G = '{ca3e7ab9-b4c3-4ae6-8251-579ef933890f}' }, @{ N = 'Image'; G = '{6bdd1fc6-810f-11d0-bec7-08002be2092f}' }, @{ N = 'Media'; G = '{4d36e96c-e325-11ce-bfc1-08002be10318}' }, @{ N = 'USB'; G = '{36fc9e60-c465-11cf-8056-444553540000}' })) {
@@ -336,7 +356,10 @@ Invoke-Section '02-cameras-pnp.txt' {
         $u = Get-RegValue $k 'UpperFilters'
         $l = Get-RegValue $k 'LowerFilters'
         '{0,-8} UpperFilters={1}   LowerFilters={2}' -f $cls.N, ($u -join ','), ($l -join ',')
-        if ($u -or ($l -and ($l -join ',') -notmatch '^(WdmCompanionFilter)?$')) { Add-Flag ("Class-level filter driver on {0} class: Upper={1} Lower={2}" -f $cls.N, ($u -join ','), ($l -join ',')) }
+        $uText = ($u -join ','); $lText = ($l -join ',')
+        $upperOk = if ($cls.N -eq 'USB') { $uText -eq '' } else { $uText -match '^(ksthunk)?$' }
+        $lowerOk = $lText -match '^(WdmCompanionFilter)?$'
+        if (-not $upperOk -or -not $lowerOk) { Add-Flag ("Non-standard class-level filter driver on {0} class: Upper={1} Lower={2} (stock: ksthunk upper on Camera/Image/Media, nothing on USB)." -f $cls.N, $uText, $lText) }
     }
 }
 
@@ -377,16 +400,16 @@ Invoke-Section '04-media-foundation.txt' {
     "FrameServer service: $((Get-Service FrameServer -ErrorAction SilentlyContinue).Status)"
     ''
     $catNames = @{
-        '{d6c02d4b-6833-45b4-971a-05a4b04bab91}' = 'VIDEO_DECODER'
-        '{f79eac7d-e545-4387-bdee-d647d7bde42a}' = 'VIDEO_ENCODER'
-        '{12e17c21-532c-4a6e-8a1c-40825a736397}' = 'VIDEO_EFFECT'
-        '{302ea3fc-aa5f-47f9-9f7a-c2188bb16302}' = 'VIDEO_PROCESSOR'
-        '{9ea73fb4-ef7a-4559-8d5d-719d8f0426c7}' = 'AUDIO_DECODER'
-        '{91c64bd0-f91e-4d8c-9276-db248279d975}' = 'AUDIO_ENCODER'
-        '{11064c48-3648-4ed0-932e-05ce8ac811b7}' = 'AUDIO_EFFECT'
-        '{059c561e-05ae-4b61-b69d-55b61ee54a7b}' = 'MULTIPLEXER'
-        '{a8700a7a-939b-44c5-99d7-76226b23b3f1}' = 'DEMULTIPLEXER'
-        '{90175d57-b7ea-4901-aeb3-933a8747756f}' = 'OTHER'
+        'd6c02d4b-6833-45b4-971a-05a4b04bab91' = 'VIDEO_DECODER'
+        'f79eac7d-e545-4387-bdee-d647d7bde42a' = 'VIDEO_ENCODER'
+        '12e17c21-532c-4a6e-8a1c-40825a736397' = 'VIDEO_EFFECT'
+        '302ea3fc-aa5f-47f9-9f7a-c2188bb16302' = 'VIDEO_PROCESSOR'
+        '9ea73fb4-ef7a-4559-8d5d-719d8f0426c7' = 'AUDIO_DECODER'
+        '91c64bd0-f91e-4d8c-9276-db248279d975' = 'AUDIO_ENCODER'
+        '11064c48-3648-4ed0-932e-05ce8ac811b7' = 'AUDIO_EFFECT'
+        '059c561e-05ae-4b61-b69d-55b61ee54a7b' = 'MULTIPLEXER'
+        'a8700a7a-939b-44c5-99d7-76226b23b3f1' = 'DEMULTIPLEXER'
+        '90175d57-b7ea-4901-aeb3-933a8747756f' = 'OTHER'
     }
     foreach ($v in $views) {
         "===== Media Foundation transforms ($($v.Name) view) ====="
@@ -395,10 +418,10 @@ Invoke-Section '04-media-foundation.txt' {
         $membership = @{}
         if (Test-Path $catRoot) {
             foreach ($cat in (Get-ChildItem $catRoot -ErrorAction SilentlyContinue)) {
-                $cn = $catNames[$cat.PSChildName.ToLower()]
+                $cn = $catNames[$cat.PSChildName.Trim('{}').ToLower()]
                 if (-not $cn) { $cn = $cat.PSChildName }
                 foreach ($m in (Get-ChildItem $cat.PSPath -ErrorAction SilentlyContinue)) {
-                    $key = $m.PSChildName.ToLower()
+                    $key = $m.PSChildName.Trim('{}').ToLower()
                     if (-not $membership.ContainsKey($key)) { $membership[$key] = @() }
                     $membership[$key] += $cn
                 }
@@ -411,10 +434,9 @@ Invoke-Section '04-media-foundation.txt' {
             $name = (Get-ItemProperty $t.PSPath -ErrorAction SilentlyContinue).'(default)'
             $srv = Get-InprocServer $v.Classes $clsid
             $signer = if ($srv) { Get-SignerInfo $srv } else { 'NO InprocServer32' }
-            $cats = $membership[$clsid.ToLower()]
-            if (-not $cats) { $cats = $membership[$t.PSChildName.ToLower()] }
+            $cats = $membership[$t.PSChildName.Trim('{}').ToLower()]
             $rows += [pscustomobject]@{ Name = $name; Category = ($cats -join ','); Signer = $signer; CLSID = $clsid; Dll = $srv }
-            if ($cats -contains 'VIDEO_DECODER' -and $signer -notmatch '(?i)^Microsoft' -and $name -match '(?i)jpeg|jpg') {
+            if ($cats -contains 'VIDEO_DECODER' -and -not (Test-FirstPartyMicrosoft $signer $srv) -and $name -match '(?i)jpeg|jpg') {
                 if ($encDec -ne 0) { Add-Flag ("Non-Microsoft MJPEG decoder MFT active: '{0}' ({1}, {2} view). Known to swallow MJPEG frames; test HardwareMFT EnableDecoders=0 and restart FrameServer." -f $name, $signer, $v.Name) }
                 else { Add-Note ("Non-Microsoft MJPEG decoder MFT present but hardware decoders disabled: '{0}' ({1})" -f $name, $signer) }
             }
@@ -543,7 +565,7 @@ Invoke-Section '06-directshow.txt' {
             $state = if ($srv) { Get-SignerInfo $srv } else { 'NO InprocServer32' }
             $merit = ''
             try { if ($p.FilterData -and $p.FilterData.Length -ge 8) { $merit = '0x{0:X8}' -f [BitConverter]::ToUInt32($p.FilterData, 4) } } catch {}
-            $isMs = ($state -match '(?i)^Microsoft')
+            $isMs = Test-FirstPartyMicrosoft $state $srv
             if (-not $isMs -or $state -eq 'MISSING FILE') {
                 $suspicious++
                 '{0,-45} merit={1,-10} {2,-40} {3}  {4}' -f $p.FriendlyName, $merit, $clsid, $srv, $state
@@ -568,7 +590,7 @@ Invoke-Section '06-directshow.txt' {
                 if ($label -match '^\{47504A4D') { $label += ' (MJPG)' } elseif ($label -match '^\{32595559') { $label += ' (YUY2)' } elseif ($label -match '^\{3231564E') { $label += ' (NV12)' }
                 '{0,-48} -> {1,-40} {2,-32} {3}' -f $label, $target, $tName, $tState
                 if ($tState -eq 'NO REGISTRATION' -or $tState -eq 'MISSING FILE') { Add-Flag ("DirectShow Preferred entry ({0} view) {1} points to unusable decoder {2} [{3}]. Delete the value." -f $v.Name, $label, $target, $tState) }
-                elseif ($label -match 'MJPG|YUY2|NV12' -and $tState -notmatch '(?i)^Microsoft') { Add-Flag ("DirectShow Preferred entry ({0} view) {1} -> non-Microsoft decoder '{2}' [{3}]." -f $v.Name, $label, $tName, $tState) }
+                elseif ($label -match 'MJPG|YUY2|NV12' -and -not (Test-FirstPartyMicrosoft $tState $tSrv)) { Add-Flag ("DirectShow Preferred entry ({0} view) {1} -> non-Microsoft decoder '{2}' [{3}]." -f $v.Name, $label, $tName, $tState) }
             }
         }
         else { '(key absent)' }
@@ -756,22 +778,22 @@ Invoke-Section '11-event-logs.txt' {
     $since = (Get-Date).AddDays(-7)
     'System log, last 7 days, warnings/errors matching USB/PnP/camera/FrameServer (max 150):'
     $sys = Get-WinEvent -FilterHashtable @{ LogName = 'System'; StartTime = $since; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
-        Where-Object { $_.ProviderName -match '(?i)usb|kernel-pnp|xhci|hub|camera|frameserver|userpnp|driverframeworks' -or $_.Message -match '(?i)VID_0120|DelanCam|camera|usbvideo' } |
+        Where-Object { $_.ProviderName -match '(?i)usb|kernel-pnp|xhci|hub|camera|frameserver|userpnp|driverframeworks' -or (Get-EventText $_) -match '(?i)VID_0120|DelanCam|camera|usbvideo' } |
         Select-Object -First 150
-    foreach ($e in $sys) { '{0:yyyy-MM-dd HH:mm:ss}  {1,-5} {2,-40} id={3}  {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.ProviderName, $e.Id, (($e.Message -split "`r?`n")[0]) }
-    $camEvents = @($sys | Where-Object { $_.Message -match '(?i)VID_0120' })
+    foreach ($e in $sys) { '{0:yyyy-MM-dd HH:mm:ss}  {1,-5} {2,-40} id={3}  {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.ProviderName, $e.Id, (((Get-EventText $e) -split "`r?`n")[0]) }
+    $camEvents = @($sys | Where-Object { (Get-EventText $_) -match '(?i)VID_0120' })
     if ($camEvents.Count -gt 0) { Add-Note ("{0} System-log warning/error events mention DelanCam1 in the last 7 days (see 11)." -f $camEvents.Count) }
     ''
     'Kernel-PnP events for DelanCam1 (all levels, last 7 days, max 60):'
-    $pnp = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-PnP'; StartTime = $since } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match '(?i)VID_0120' } | Select-Object -First 60
-    foreach ($e in $pnp) { '{0:yyyy-MM-dd HH:mm:ss}  id={1}  {2}' -f $e.TimeCreated, $e.Id, (($e.Message -split "`r?`n")[0]) }
+    $pnp = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-PnP'; StartTime = $since } -ErrorAction SilentlyContinue | Where-Object { (Get-EventText $_) -match '(?i)VID_0120' } | Select-Object -First 60
+    foreach ($e in $pnp) { '{0:yyyy-MM-dd HH:mm:ss}  id={1}  {2}' -f $e.TimeCreated, $e.Id, (((Get-EventText $e) -split "`r?`n")[0]) }
     ''
     'Application log, last 7 days: crashes/hangs/WER and camera-app messages (max 100):'
     $app = Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $since; Level = 1, 2, 3 } -ErrorAction SilentlyContinue |
-        Where-Object { $_.ProviderName -match '(?i)Application Error|Application Hang|Windows Error Reporting|\.NET Runtime' -or $_.Message -match '(?i)opentrack|aitrack|frameserver|opencv|camera' } |
+        Where-Object { $_.ProviderName -match '(?i)Application Error|Application Hang|Windows Error Reporting|\.NET Runtime' -or (Get-EventText $_) -match '(?i)opentrack|aitrack|frameserver|opencv|camera' } |
         Select-Object -First 100
-    foreach ($e in $app) { '{0:yyyy-MM-dd HH:mm:ss}  {1,-5} {2,-28} id={3}  {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.ProviderName, $e.Id, ((($e.Message -split "`r?`n") | Select-Object -First 3) -join ' | ') }
-    $crashes = @($app | Where-Object { $_.ProviderName -match 'Application Error|Application Hang' -and $_.Message -match '(?i)opentrack|aitrack' })
+    foreach ($e in $app) { '{0:yyyy-MM-dd HH:mm:ss}  {1,-5} {2,-28} id={3}  {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.ProviderName, $e.Id, ((((Get-EventText $e) -split "`r?`n") | Select-Object -First 3) -join ' | ') }
+    $crashes = @($app | Where-Object { $_.ProviderName -match 'Application Error|Application Hang' -and (Get-EventText $_) -match '(?i)opentrack|aitrack' })
     if ($crashes.Count -gt 0) { Add-Flag ("{0} crash/hang events for OpenTrack/AITrack in the last 7 days (see 11 for faulting module)." -f $crashes.Count) }
 }
 
@@ -782,7 +804,7 @@ Invoke-Section '12-security.txt' {
     'Defender:'
     (Get-MpComputerStatus -ErrorAction SilentlyContinue | Select-Object AMServiceEnabled, AntivirusEnabled, RealTimeProtectionEnabled, IsTamperProtected, AntivirusSignatureVersion | Format-List)
     'Known webcam-protection services present:'
-    $svc = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)^(ekrn|avp|vsserv|bdredline|NortonSecurity|NS|mfe|McAfee|avast|AVG|klif|TmCCSF|Amsp|HPWolf|SophosNtp|WRSVC)' -or $_.DisplayName -match '(?i)eset|kaspersky|bitdefender|norton|mcafee|avast|avg |trend micro|sophos|webroot|hp wolf' }
+    $svc = Get-Service -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '(?i)\b(eset|kaspersky|bitdefender|norton|mcafee|avast|avg antivirus|avg internet|trend micro|sophos|webroot|hp wolf|f-secure|g data|panda security|avira|malwarebytes)\b' }
     if ($svc) { ($svc | Select-Object Status, Name, DisplayName | Format-Table -AutoSize); Add-Flag ("Third-party security product services present: {0}. Check webcam protection settings." -f (($svc | Select-Object -ExpandProperty DisplayName -Unique) -join ', ')) } else { '(none)' }
     'Exploit protection / ASR (informational):'
     (Get-MpPreference -ErrorAction SilentlyContinue | Select-Object AttackSurfaceReductionRules_Ids, EnableControlledFolderAccess | Format-List)
@@ -795,20 +817,27 @@ Invoke-Section '13-setupapi-delancam.txt' {
     $lines = Get-Content $log -ErrorAction SilentlyContinue
     $hits = New-Object System.Collections.Generic.List[string]
     $sectionHeader = ''
+    $sectionIsCamera = $false
+    $sectionStart = ''
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $l = $lines[$i]
-        if ($l -match '^>>>  \[') { $sectionHeader = $l; $sectionStart = if ($i + 1 -lt $lines.Count) { $lines[$i + 1] } else { '' }; continue }
+        if ($l -match '^>>>  \[') { $sectionHeader = $l; $sectionIsCamera = ($l -match '(?i)VID_0120.*PID_1234'); $sectionStart = if ($i + 1 -lt $lines.Count) { $lines[$i + 1] } else { '' }; continue }
         if ($l -match '(?i)VID_0120.*PID_1234' -and $sectionHeader) {
             if (-not $hits.Contains($sectionHeader)) { $hits.Add(''); $hits.Add($sectionHeader); $hits.Add($sectionStart) }
         }
         if ($l -match '^<<<  \[Exit status' -and $hits.Count -gt 0 -and $hits[$hits.Count - 1] -notmatch 'Exit status' -and $sectionHeader -and $hits.Contains($sectionHeader)) { $hits.Add($l) }
-        if ($l -match '(?i)VID_0120.*PID_1234|Class GUID of device changed|libusb|WinUSB|Zadig|libusbK' -and $sectionHeader -and $hits.Contains($sectionHeader) -and $l -notmatch '^>>>') { $hits.Add('    ' + $l.Trim()) }
+        if ($sectionHeader -and $hits.Contains($sectionHeader) -and $l -notmatch '^>>>') {
+            # Generic servicing sections ("Install Driver Updates") mention winusb.inf for other devices; only lines
+            # naming DelanCam1 count there. Inside a DelanCam1-specific section the driver selection lines matter too.
+            if ($l -match '(?i)VID_0120.*PID_1234') { $hits.Add('    ' + $l.Trim()) }
+            elseif ($sectionIsCamera -and $l -match '(?i)Class GUID of device changed|libusb|WinUSB|Zadig|Driver Node:|InfName|Driver Version -|DevDesc|Selected driver') { $hits.Add('    ' + $l.Trim()) }
+        }
     }
     "Sections in setupapi.dev.log touching DelanCam1 (header, start time, notable lines, exit status):"
     $hits | Select-Object -Last 400
     $manual = @($hits | Where-Object { $_ -match 'DiShowUpdateDevice|Update Driver Software Wizard|Device Uninstall' })
     if ($manual.Count -gt 0) { Add-Note ("setupapi shows manual driver actions on DelanCam1 (Update Driver wizard / uninstall): {0} lines - ask the customer what was installed." -f $manual.Count) }
-    if ($hits | Where-Object { $_ -match '(?i)libusb|WinUSB|Zadig' }) { Add-Flag 'setupapi mentions libusb/WinUSB/Zadig for DelanCam1: the PS3 Eye driver procedure was applied to this camera.' }
+    if ($hits | Where-Object { $_ -match '(?i)libusb|Zadig|libusbK' -or $_ -match '(?i)(InfName|Strong Name).*winusb' }) { Add-Flag 'setupapi shows a libusb/libusbK/WinUSB driver selected for DelanCam1 itself: the PS3 Eye driver procedure was applied to this camera.' }
     if ($hits | Where-Object { $_ -match 'Class GUID of device changed' }) { Add-Note 'setupapi: the device class of DelanCam1 changed at some point (a non-camera driver was bound before).' }
 }
 
@@ -842,7 +871,17 @@ $summary.Add('  13-setupapi-delancam.txt       driver install history of DelanCa
 Save-Text '00-SUMMARY.txt' $summary
 
 $zip = $out + '.zip'
-try { Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -Force; $zipNote = "ZIP: $zip" } catch { $zipNote = 'ZIP failed: ' + $_.Exception.Message }
+try {
+    # .NET ZipFile writes forward-slash entry names; Compress-Archive on PowerShell 5.1 writes backslashes,
+    # which non-Windows unzip tools reject.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    if (Test-Path $zip) { Remove-Item $zip -Force }
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($out, $zip)
+    $zipNote = "ZIP: $zip"
+}
+catch {
+    try { Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip -Force; $zipNote = "ZIP: $zip" } catch { $zipNote = 'ZIP failed: ' + $_.Exception.Message }
+}
 
 Write-Host ''
 foreach ($line in $summary) { Write-Host $line }
