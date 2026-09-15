@@ -1,0 +1,49 @@
+Delanclip DelanCam1 Fix Tool
+
+PURPOSE
+This tool checks the Windows video pipeline that OpenTrack, AITrack and similar camera software depend on, and repairs the known damage that stops them from opening DelanCam1 while the Windows Camera app still shows a picture. Run it only when Delanclip Support asks for it, after they have read your DelanCam1 Diagnostics report.
+
+It checks and can repair:
+A. a vendor hardware MJPEG decoder (NVIDIA, AMD, Intel) intercepting Media Foundation - repair: EnableDecoders=0 in HKLM\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT, Frame Server service restarted
+B. missing 64-bit or 32-bit VFW codec entries (Drivers32 vidc.*) - repair: the nine stock entries are re-added when the codec DLL exists in Windows
+C. dead DirectShow registrations: ghost virtual cameras and filters whose DLL no longer exists - repair: the dead entries are deleted, the per-user DirectShow device cache is cleared and the Windows DirectShow core is re-registered with regsvr32
+D. DirectShow decoder preferences pointing at removed codecs (Preferred, DoNotUse, TreatAs) - repair: stock values restored, dangling values deleted
+E. camera privacy consent, camera policies, the Frame Server service and Fast Startup - only a disabled Frame Server service is repaired; consent and policy problems are reported with instructions
+
+Virtual cameras whose program is still installed are listed and never removed.
+
+USAGE
+1. Keep DelanCam1 connected. Close Windows Camera, OBS, Teams, Discord, OpenTrack and AITrack.
+2. Unzip DelanCam1-FixTool.zip.
+3. Run DelanCam1-FixTool.cmd. Read the notice and press a key.
+4. Accept the Windows administrator prompt (User Account Control). Without it the tool can only check, not repair.
+5. Read the result. The tool lists what it found and what it would change. Nothing has been changed yet.
+6. Type APPLY and press Enter to repair, or press Enter alone to leave everything as it is.
+7. After the repairs the tool checks again and tells you whether a restart is needed.
+8. Restart Windows with "Restart" (not "Shut down"), then run the DelanCam1 Diagnostics tool again and send the new report to Delanclip Support.
+
+Switches: /apply skips the APPLY question, /skipprobe skips opening the camera.
+Running the tool again on a repaired system changes nothing and reports CLEAN.
+
+UNDO
+Before the first change the tool creates the folder DelanCam1-FixTool-backup-<date-time> on your Desktop. Every registry key it changes is exported there first. UNDO.cmd in that folder restores the previous state; run it as administrator.
+
+PRIVACY
+The tool does not collect camera images or video, personal documents, photos, emails, passwords, browser history, command lines of running processes, the installed-program list or the running-process list.
+
+It does not delete files, install software, replace drivers, alter camera privacy settings, make network connections, send telemetry, upload anything or download code.
+
+The camera probe briefly opens DelanCam1 with Windows's own camera API and keeps only frame counts per format.
+
+The only writes it performs are the registry changes listed above, the regsvr32 re-registration of six Windows DirectShow components, stopping the Frame Server service (it restarts on demand) and, if it was disabled, setting that service back to Manual. Every registry change is preceded by an export to the backup folder.
+
+The log records the Windows build, whether the run was elevated, the local user name, profile names of logged-on users, registry names, identifiers and file paths of decoders, filters and virtual cameras, per-format frame counts, service state and restart state. It stays on your Desktop until you choose to send it.
+
+OUTPUT
+Check only: DelanCam1-FixTool-check-<date-time>.txt on the Desktop, the complete output of the run.
+After APPLY: the folder DelanCam1-FixTool-backup-<date-time> on the Desktop with:
+- LOG.txt - complete output: check, planned changes, every backup and change, verification, next steps
+- *.reg - reg export of every registry key before it was changed
+- UNDO.cmd - restores the previous state; run as administrator
+
+If Delanclip Support asks for it, send them the check file or the whole backup folder.
