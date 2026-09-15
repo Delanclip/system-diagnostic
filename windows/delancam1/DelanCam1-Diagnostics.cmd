@@ -1,10 +1,11 @@
 @echo off
 setlocal
-title Delanclip DelanCam1 Diagnostics
+set "DELAN_VERSION=1.4.1"
+title Delanclip DelanCam1 Diagnostics v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 
 echo ============================================================
-echo        Delanclip DelanCam1 Diagnostics
+echo        Delanclip DelanCam1 Diagnostics v%DELAN_VERSION%
 echo ============================================================
 echo.
 echo Keep DelanCam1 connected while this tool runs.
@@ -13,17 +14,19 @@ echo Close other apps that may use the camera first, such as Windows Camera,
 echo OBS, Teams, Discord or OpenTrack, so the stream test can open DelanCam1
 echo without another app already holding it.
 echo.
-echo This tool collects Windows camera, driver, USB, privacy,
-echo security-product, installed-program and running-application
-echo information, plus the Windows video-decoder registrations that camera
-echo software depends on, the USB path the camera is connected through and
-echo its exposure settings. It also briefly opens DelanCam1 to test its video
-echo stream, but does NOT save any image or video data from the camera.
-echo It does NOT change drivers, install software, upload anything, or make
-echo network connections.
+echo What this tool will do:
+echo  - read Windows camera, driver and USB information
+echo  - briefly open DelanCam1 to test its video stream, without saving
+echo    any image or video
+echo  - change nothing on your PC, install nothing and make no network
+echo    connections
+echo  - show its progress below, step by step; a full run usually takes
+echo    one to two minutes
 echo.
 echo The report ZIP will be created on your Desktop with a name starting:
 echo SEND-TO-DELANCLIP-DelanCam1-Report-
+echo When it is ready, a File Explorer window opens by itself with the ZIP
+echo selected. What the report contains is described in README.txt.
 echo.
 pause
 
@@ -49,7 +52,7 @@ exit /b %RC%
 
 ### DELANCLIP_POWERSHELL ###
 $ErrorActionPreference = 'Stop'
-$script:toolVersion = '1.4.0'
+$script:toolVersion = if ($env:DELAN_VERSION) { $env:DELAN_VERSION } else { 'unknown' }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -70,10 +73,32 @@ function Record-Error {
     Add-Content -LiteralPath $errorsFile -Value $line -Encoding UTF8
 }
 
+$script:stepIndex = 0
+$script:stepTotal = 0
+try {
+    $scriptText = Get-Content -LiteralPath $env:DELAN_SCRIPT -Raw -ErrorAction Stop
+    $script:stepTotal = [regex]::Matches($scriptText, "(?m)^Run-Step '").Count
+    $scriptText = $null
+}
+catch {}
+if ($script:stepTotal -lt 1) { $script:stepTotal = 30 }
+
 function Run-Step {
     param([string]$Name, [scriptblock]$Action)
-    try { & $Action }
-    catch { Record-Error -Step $Name -Err $_ }
+    $script:stepIndex++
+    $label = "[{0,2}/{1}] {2}" -f $script:stepIndex, $script:stepTotal, $Name
+    $percent = [math]::Min(100, [int](($script:stepIndex - 1) * 100 / $script:stepTotal))
+    try { Write-Progress -Activity 'Delanclip DelanCam1 Diagnostics' -Status $label -PercentComplete $percent } catch {}
+    Write-Host ("{0,-52}" -f $label) -NoNewline
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $Action
+        Write-Host ("done ({0,4:N1} s)" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
+    }
+    catch {
+        Record-Error -Step $Name -Err $_
+        Write-Host ("failed ({0,4:N1} s), see errors.txt" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Yellow
+    }
 }
 
 function Get-DevicePropertyData {
@@ -1699,7 +1724,12 @@ Run-Step 'Camera event logs' {
                         Add-Content -LiteralPath $path -Encoding UTF8
                 }
             }
-            catch { Record-Error -Step ("Camera event log " + $log.LogName) -Err $_ }
+            catch {
+                if ($_.Exception.Message -match '(?i)No events were found') {
+                    Add-Content -LiteralPath $path -Value 'No events in the previous 7 days.' -Encoding UTF8
+                }
+                else { Record-Error -Step ("Camera event log " + $log.LogName) -Err $_ }
+            }
             Add-Content -LiteralPath $path -Value '' -Encoding UTF8
         }
     }
@@ -2337,9 +2367,11 @@ if (-not (Test-Path -LiteralPath $zipPath)) {
 
 try { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 
+try { Write-Progress -Activity 'Delanclip DelanCam1 Diagnostics' -Completed } catch {}
 Write-Host ''
 Write-Host 'Diagnostic package created:' -ForegroundColor Green
 Write-Host $zipPath -ForegroundColor Cyan
+Write-Host 'A File Explorer window with the ZIP selected is opening now.'
 Write-Host ''
 
 try { Start-Process explorer.exe -ArgumentList "/select,`"$zipPath`"" } catch {}
