@@ -62,7 +62,12 @@ echo Requesting administrator rights...
 set "DELAN_RELAUNCH_ARGS=/elevated"
 if "%DELAN_MODE%"=="apply" set "DELAN_RELAUNCH_ARGS=%DELAN_RELAUNCH_ARGS% /apply"
 if "%DELAN_SKIPPROBE%"=="1" set "DELAN_RELAUNCH_ARGS=%DELAN_RELAUNCH_ARGS% /skipprobe"
-"%DELAN_PS%" -NoProfile -ExecutionPolicy Bypass -Command "try { $p = Start-Process -FilePath $env:DELAN_SCRIPT -ArgumentList $env:DELAN_RELAUNCH_ARGS -WorkingDirectory (Split-Path -Parent $env:DELAN_SCRIPT) -Verb RunAs -PassThru -Wait -ErrorAction Stop; if ($p -and $null -ne $p.ExitCode) { exit $p.ExitCode } else { exit 0 } } catch { exit 99 }"
+rem A file downloaded from the internet carries a "mark of the web". Windows
+rem refuses to elevate such a script file directly ("This app has been blocked
+rem for your protection"), so the elevated process is cmd.exe itself with this
+rem file as its argument, and the mark is removed from this file first.
+set "DELAN_CMDARGS=/c ""%DELAN_SCRIPT%" %DELAN_RELAUNCH_ARGS%""
+"%DELAN_PS%" -NoProfile -ExecutionPolicy Bypass -Command "try { Unblock-File -LiteralPath $env:DELAN_SCRIPT -ErrorAction Stop } catch {}; try { $p = Start-Process -FilePath 'cmd.exe' -ArgumentList $env:DELAN_CMDARGS -WorkingDirectory (Split-Path -Parent $env:DELAN_SCRIPT) -Verb RunAs -PassThru -Wait -ErrorAction Stop; if ($p -and $null -ne $p.ExitCode) { exit $p.ExitCode } else { exit 0 } } catch { exit 99 }"
 set "RC=%ERRORLEVEL%"
 if "%RC%"=="99" (
     echo.
