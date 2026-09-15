@@ -94,6 +94,18 @@ The tool also runs if DelanCam1 is absent. In that case it records other present
 camera devices, including their hardware IDs and bus-reported descriptions, so
 support can review whether the camera appeared under an unexpected name.
 
+## When the report flags the Windows video pipeline
+
+A `SUMMARY.txt` with `REVIEW HIGH` lines under `WINDOWS VIDEO PIPELINE` (MJPEG
+delivering no frames while NV12/YUY2 stream, missing VFW codec entries, dead
+DirectShow filters or ghost virtual cameras, a preferred MJPG decoder that is
+not the Windows default) describes damage this tool only reports. The
+companion [DelanCam1 Fix Tool](../delancam1-fixtool/) repairs exactly those
+findings: it checks first, lists the changes, applies them only after the
+customer types `APPLY`, and exports a backup with an undo script before the
+first change. Delanclip Support sends it after reading the report; the order
+is check, apply, restart, then this diagnostic tool once more.
+
 ## Privacy
 
 In short: the tool reads technical device information and Windows settings.
