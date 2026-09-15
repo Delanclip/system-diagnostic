@@ -17,16 +17,16 @@ USAGE
 2. Unzip DelanCam1-FixTool.zip.
 3. Run DelanCam1-FixTool.cmd. Read the notice and press a key.
 4. Accept the Windows administrator prompt (User Account Control). Without it the tool can only check, not repair.
-5. Read the result. The tool lists what it found and what it would change. Nothing has been changed yet.
-6. Type APPLY and press Enter to repair, or press Enter alone to leave everything as it is.
-7. After the repairs the tool checks again and tells you whether a restart is needed.
-8. Restart Windows with "Restart" (not "Shut down"), then run the DelanCam1 Diagnostics tool again and send the new report to Delanclip Support.
+5. Read the result. The tool explains in plain words what it found and what it would repair. Nothing has been changed yet.
+6. Press Y to repair, or N to leave everything as it is.
+7. After the repairs the tool checks again and tells you what to do next.
+8. Press R to restart Windows in 30 seconds, or restart yourself later with "Restart" (not "Shut down"). Then run the DelanCam1 Diagnostics tool again and send the new report to Delanclip Support.
 
-Switches: /apply skips the APPLY question, /skipprobe skips opening the camera.
-Running the tool again on a repaired system changes nothing and reports CLEAN.
+Switches: /apply repairs without asking, /undo undoes the most recent repair, /skipprobe skips opening the camera.
+Running the tool again on a repaired system changes nothing and reports that everything is in order.
 
 UNDO
-Before the first change the tool creates the folder DelanCam1-FixTool-backup-<date-time> on your Desktop. Every registry key it changes is exported there first. UNDO.cmd in that folder restores the previous state; run it as administrator.
+Before the first change the tool creates the folder DelanCam1-FixTool-backup-<date-time> on your Desktop. Every registry key it changes is exported there first. To put everything back: run UNDO.cmd in that folder as administrator, or run the tool again and press U when it offers to undo the earlier repair.
 
 PRIVACY
 The tool does not collect camera images or video, personal documents, photos, emails, passwords, browser history, command lines of running processes, the installed-program list or the running-process list.
@@ -41,8 +41,8 @@ The log records the Windows build, whether the run was elevated, the local user 
 
 OUTPUT
 Check only: DelanCam1-FixTool-check-<date-time>.txt on the Desktop, the complete output of the run.
-After APPLY: the folder DelanCam1-FixTool-backup-<date-time> on the Desktop with:
-- LOG.txt - complete output: check, planned changes, every backup and change, verification, next steps
+After a repair: the folder DelanCam1-FixTool-backup-<date-time> on the Desktop with:
+- LOG.txt - everything shown on screen plus the technical detail: each check, planned changes, every backup and change, verification, next steps
 - *.reg - reg export of every registry key before it was changed
 - UNDO.cmd - restores the previous state; run as administrator
 

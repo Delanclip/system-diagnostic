@@ -1,6 +1,7 @@
 @echo off
 setlocal
-title Delanclip DelanCam1 Fix Tool
+set "DELAN_VERSION=1.1.0"
+title Delanclip DelanCam1 Fix Tool v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 set "DELAN_MODE=check"
 set "DELAN_SKIPPROBE=0"
@@ -10,6 +11,7 @@ set "DELAN_ELEVATED=0"
 if "%~1"=="" goto args_done
 if /i "%~1"=="/apply" set "DELAN_MODE=apply"
 if /i "%~1"=="/check" set "DELAN_MODE=check"
+if /i "%~1"=="/undo" set "DELAN_MODE=undo"
 if /i "%~1"=="/skipprobe" set "DELAN_SKIPPROBE=1"
 if /i "%~1"=="/elevated" set "DELAN_ELEVATED=1"
 shift
@@ -25,32 +27,24 @@ if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "DEL
 if "%DELAN_ELEVATED%"=="1" goto run
 
 echo ============================================================
-echo        Delanclip DelanCam1 Fix Tool
+echo        Delanclip DelanCam1 Fix Tool v%DELAN_VERSION%
 echo ============================================================
 echo.
-echo This tool checks the Windows video pipeline that OpenTrack, AITrack
-echo and similar camera software depend on, and repairs the known damage
-echo that stops them from opening DelanCam1 while Windows Camera still works:
+echo This tool repairs the Windows settings that can stop OpenTrack or
+echo AITrack from opening DelanCam1 while the Windows Camera app still works.
 echo.
-echo   A. a vendor hardware MJPEG decoder intercepting Media Foundation
-echo   B. missing 64-bit or 32-bit VFW codec registrations (Drivers32)
-echo   C. dead DirectShow filter and virtual-camera registrations
-echo   D. DirectShow decoder preferences pointing at removed codecs
-echo   E. camera privacy consent, Frame Server service and restart state
+echo How it works:
+echo  1. It checks your PC and tells you in plain words what it found.
+echo  2. Nothing is changed until you answer Y to "Repair now?".
+echo  3. Before any change, a backup folder with an UNDO script is created
+echo     on your Desktop, so everything can be put back with one click.
 echo.
-echo It first only CHECKS and prints what it found. Nothing is changed
-echo unless you type APPLY when asked, or start it with the /apply switch.
+echo It deletes no files, installs nothing and never connects to the internet.
 echo.
-echo Every registry change is exported to a backup folder on your Desktop
-echo first, together with an UNDO.cmd that restores the previous state.
-echo The tool deletes no files, installs nothing, makes no network
-echo connections and sends nothing anywhere.
+echo Before you continue: keep DelanCam1 connected and close apps that use
+echo the camera (Windows Camera, OBS, Teams, Discord, OpenTrack, AITrack).
 echo.
-echo Keep DelanCam1 connected and close apps that may use the camera
-echo (Windows Camera, OBS, Teams, Discord, OpenTrack) before continuing.
-echo.
-echo Administrator rights are required for the repairs, so Windows will
-echo show a User Account Control prompt next.
+echo Windows will now ask for permission to make changes. Please answer Yes.
 echo.
 pause
 
@@ -58,9 +52,10 @@ fltmc >nul 2>&1
 if %ERRORLEVEL%==0 goto run
 
 echo.
-echo Requesting administrator rights...
+echo Asking Windows for administrator permission...
 set "DELAN_RELAUNCH_ARGS=/elevated"
 if "%DELAN_MODE%"=="apply" set "DELAN_RELAUNCH_ARGS=%DELAN_RELAUNCH_ARGS% /apply"
+if "%DELAN_MODE%"=="undo" set "DELAN_RELAUNCH_ARGS=%DELAN_RELAUNCH_ARGS% /undo"
 if "%DELAN_SKIPPROBE%"=="1" set "DELAN_RELAUNCH_ARGS=%DELAN_RELAUNCH_ARGS% /skipprobe"
 rem A file downloaded from the internet carries a "mark of the web". Windows
 rem refuses to elevate such a script file directly ("This app has been blocked
@@ -71,22 +66,19 @@ set "DELAN_CMDARGS=/c ""%DELAN_SCRIPT%" %DELAN_RELAUNCH_ARGS%""
 set "RC=%ERRORLEVEL%"
 if "%RC%"=="99" (
     echo.
-    echo Administrator rights were not granted.
-    echo The tool will only CHECK the system now; nothing can be repaired
-    echo without administrator rights. Run it again to repair.
+    echo Permission was not given. The tool will only check your PC now.
+    echo To repair, run it again and answer Yes to the Windows question.
     echo.
     set "DELAN_MODE=check"
     goto run
 )
 echo.
-echo The administrator window has finished. Its log is on your Desktop.
+echo Finished. You can close this window.
 echo.
 pause
 exit /b %RC%
 
 :run
-echo.
-echo Checking the Windows video pipeline. Please wait...
 echo.
 
 "%DELAN_PS%" -NoProfile -ExecutionPolicy Bypass -Command "$raw = Get-Content -LiteralPath $env:DELAN_SCRIPT -Raw; $marker = '### DELANCLIP_' + 'POWERSHELL ###'; $idx = $raw.LastIndexOf($marker); if ($idx -lt 0) { throw 'Embedded PowerShell section not found.' }; $code = $raw.Substring($idx + $marker.Length); Invoke-Expression $code"
@@ -94,14 +86,10 @@ echo.
 set "RC=%ERRORLEVEL%"
 echo.
 if "%RC%"=="1" (
-    echo The tool did not complete successfully.
+    echo The tool could not finish.
     echo Please take a screenshot of this window and send it to Delanclip Support.
-) else (
-    echo The tool has finished. The result is shown above and saved on your Desktop.
-    echo Send Delanclip Support the DelanCam1-FixTool log or backup folder from the Desktop
-    echo if they asked for it.
+    echo.
 )
-echo.
 pause
 exit /b %RC%
 
@@ -113,18 +101,24 @@ $ProgressPreference = 'SilentlyContinue'
 # Delanclip DelanCam1 Fix Tool - embedded Windows PowerShell 5.1 implementation
 #
 # Modes (set by the .cmd wrapper through environment variables):
-#   DELAN_MODE=check      report only, then offer to apply (default)
-#   DELAN_MODE=apply      apply the repairs without asking
+#   DELAN_MODE=check      check, explain, then offer to repair (default)
+#   DELAN_MODE=apply      repair without asking
+#   DELAN_MODE=undo       undo the most recent repair found on the Desktop
 #   DELAN_SKIPPROBE=1     do not open the camera for the MJPG/NV12/YUY2 probe
+#
+# The screen shows plain-language results only. Every technical detail goes
+# to the log file (the check report on the Desktop, or LOG.txt in the backup
+# folder once a repair starts).
 #
 # Exit codes: 0 = clean (nothing to do, or repairs applied and verified),
 #             2 = findings remain (not applied, or still present after apply),
 #             1 = the tool itself failed.
 # ---------------------------------------------------------------------------
 
-$toolVersion = '1.0.0'
+$toolVersion = if ($env:DELAN_VERSION) { $env:DELAN_VERSION } else { 'unknown' }
 $mode = 'check'
 if ($env:DELAN_MODE -eq 'apply') { $mode = 'apply' }
+if ($env:DELAN_MODE -eq 'undo') { $mode = 'undo' }
 $skipProbe = ($env:DELAN_SKIPPROBE -eq '1')
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -137,7 +131,8 @@ if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) {
     if (-not (Test-Path -LiteralPath $desktop)) { New-Item -ItemType Directory -Force -Path $desktop | Out-Null }
 }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$backupDir = Join-Path $desktop ("DelanCam1-FixTool-backup-" + $stamp)
+$backupPrefix = 'DelanCam1-FixTool-backup-'
+$backupDir = Join-Path $desktop ($backupPrefix + $stamp)
 $script:LogPath = Join-Path $desktop ("DelanCam1-FixTool-check-" + $stamp + ".txt")
 $script:LogLines = New-Object System.Collections.Generic.List[string]
 $script:Findings = New-Object System.Collections.Generic.List[object]
@@ -185,31 +180,54 @@ $coreDlls = @('quartz.dll', 'qcap.dll', 'qedit.dll', 'qdv.dll', 'devenum.dll', '
 # ------------------------------------------------------------------ logging
 
 function Write-ToolLog {
-    param([string]$Text = '', [string]$Color = '')
-    if ($Color) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
+    # Technical detail: log file only, never the screen.
+    param([string]$Text = '')
     $script:LogLines.Add($Text)
     try { [System.IO.File]::AppendAllText($script:LogPath, $Text + "`r`n", (New-Object System.Text.UTF8Encoding($false))) } catch {}
+}
+
+function Write-Screen {
+    # Plain-language line for the person at the keyboard; also logged.
+    param([string]$Text = '', [string]$Color = '')
+    if ($Color) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
+    Write-ToolLog ('>> ' + $Text)
 }
 
 function Write-Section {
     param([string]$Title)
     Write-ToolLog ''
-    Write-ToolLog ('=== ' + $Title + ' ===') 'Cyan'
+    Write-ToolLog ('=== ' + $Title + ' ===')
 }
 
 function Add-Finding {
-    # Severity: FIX (applied in apply mode), MANUAL (needs a person), WARN, INFO
-    param([string]$Id, [string]$Severity, [string]$Text, [string[]]$Plan = @(), [scriptblock]$Action = $null, [hashtable]$Context = @{})
-    $script:Findings.Add([pscustomobject]@{ Id = $Id; Severity = $Severity; Text = $Text; Plan = $Plan; Action = $Action; Context = $Context })
-    $color = 'Gray'
-    if ($Severity -eq 'FIX') { $color = 'Yellow' }
-    elseif ($Severity -eq 'MANUAL' -or $Severity -eq 'WARN') { $color = 'Magenta' }
-    Write-ToolLog ('  [' + $Severity + '] ' + $Id + ': ' + $Text) $color
+    # Severity: FIX (applied in apply mode), MANUAL (needs a person), WARN, INFO.
+    # Text is the technical description (log). Human and Fix are the plain
+    # sentences shown on screen; a finding without Human stays off the screen.
+    param([string]$Id, [string]$Severity, [string]$Text, [string[]]$Plan = @(), [scriptblock]$Action = $null, [hashtable]$Context = @{}, [string]$Human = '', [string]$Fix = '')
+    $script:Findings.Add([pscustomobject]@{ Id = $Id; Severity = $Severity; Text = $Text; Plan = $Plan; Action = $Action; Context = $Context; Human = $Human; Fix = $Fix })
+    Write-ToolLog ('  [' + $Severity + '] ' + $Id + ': ' + $Text)
 }
 
 function Add-Undo {
     param([string]$Command)
     $script:Undo.Add($Command)
+}
+
+function Read-Choice {
+    # One key, no Enter. Falls back to Read-Host where a key cannot be read.
+    param([string]$Prompt)
+    Write-Host ($Prompt + ' ') -NoNewline -ForegroundColor Yellow
+    $answer = ''
+    try {
+        $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        $answer = [string]$key.Character
+        Write-Host $answer
+    }
+    catch {
+        try { $answer = [string](Read-Host) } catch { $answer = '' }
+    }
+    Write-ToolLog ('>> ' + $Prompt + ' ' + $answer)
+    return $answer.Trim().ToUpperInvariant()
 }
 
 # --------------------------------------------------------------- registry
@@ -393,7 +411,7 @@ function Get-FrameServerState {
 }
 
 function Get-BootState {
-    # Returns @{ UptimeDays; UptimeHours; FastStartup } or $null when unavailable.
+    # Returns @{ UptimeDays; UptimeHours; Hiber } or throws when unavailable.
     $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
     $uptime = (Get-Date) - $os.LastBootUpTime
     $hiber = Get-RegValue 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power' 'HiberbootEnabled'
@@ -408,9 +426,22 @@ function Stop-FrameServerServices {
                 Stop-Service -Name $svcName -Force -ErrorAction Stop
                 Write-ToolLog ('    stopped service: ' + $svcName + ' (it restarts on demand when a camera app opens)')
             }
-            catch { Write-ToolLog ('    could not stop service ' + $svcName + ': ' + $_.Exception.Message) 'Magenta' }
+            catch { Write-ToolLog ('    could not stop service ' + $svcName + ': ' + $_.Exception.Message) }
         }
     }
+}
+
+function Invoke-UndoScript {
+    # Runs a previously written UNDO.cmd without its pauses. Returns its exit code.
+    param([string]$UndoPath)
+    $p = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c ""' + $UndoPath + '" /quiet"') -WorkingDirectory (Split-Path -Parent $UndoPath) -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+    return $p.ExitCode
+}
+
+function Request-DelayedRestart {
+    param([int]$Seconds)
+    $p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\shutdown.exe') -ArgumentList ('/r /t ' + $Seconds + ' /c "Delanclip DelanCam1 Fix Tool: restarting to finish the repair."') -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+    return $p.ExitCode
 }
 
 # ------------------------------------------------------------ camera probe
@@ -583,11 +614,34 @@ function Invoke-FormatProbe {
     return $result
 }
 
-function Write-ProbeResult {
+function Get-ProbeVerdict {
+    # 'broken' (MJPEG dead, raw alive), 'healthy', 'dead' (nothing), 'none' (no probe)
+    param($Probe)
+    if (-not $Probe.Performed) { return 'none' }
+    if ($Probe.MjpgRows -gt 0 -and $Probe.MjpgFrames -eq 0 -and $Probe.RawFrames -gt 0) { return 'broken' }
+    if ($Probe.MjpgFrames -eq 0 -and $Probe.RawFrames -eq 0) { return 'dead' }
+    return 'healthy'
+}
+
+function Get-ProbeSentence {
+    param($Probe)
+    if ($Probe.Skipped) {
+        if ($Probe.Skipped -like 'skipped by*') { return 'skipped' }
+        return 'DelanCam1 was not found, camera test skipped'
+    }
+    if (-not $Probe.Performed) { return 'could not run (' + $Probe.Error + ')' }
+    switch (Get-ProbeVerdict $Probe) {
+        'broken' { return 'MJPEG gives no picture, other formats work' }
+        'dead' { return 'no picture in any format (USB, cable or driver, not something this tool repairs)' }
+        default { return 'all formats deliver a picture' }
+    }
+}
+
+function Write-ProbeLog {
     param($Probe, [string]$Title)
     Write-ToolLog ('  Camera probe (' + $Title + '): opens DelanCam1 per format for 2 seconds and counts frames')
     if ($Probe.Skipped) { Write-ToolLog ('    ' + $Probe.Skipped); return }
-    if (-not $Probe.Performed) { Write-ToolLog ('    probe could not run: ' + $Probe.Error) 'Magenta'; return }
+    if (-not $Probe.Performed) { Write-ToolLog ('    probe could not run: ' + $Probe.Error); return }
     foreach ($row in $Probe.Rows) {
         $extra = ''
         if ($row.Negotiated -and $row.Negotiated -ne $row.Requested) { $extra += '  negotiated ' + $row.Negotiated }
@@ -595,16 +649,8 @@ function Write-ProbeResult {
         if ($row.Error) { $extra += '  ' + $row.Error }
         Write-ToolLog ('    {0,-16} {1,4} frames{2}' -f $row.Requested, $row.Frames, $extra)
     }
-    if ($Probe.Error) { Write-ToolLog ('    probe error: ' + $Probe.Error) 'Magenta' }
-    if ($Probe.MjpgRows -gt 0 -and $Probe.MjpgFrames -eq 0 -and $Probe.RawFrames -gt 0) {
-        Write-ToolLog '    Reading: raw formats stream, every MJPEG request yields nothing. Windows-side MJPEG decoding is broken.' 'Yellow'
-    }
-    elseif ($Probe.MjpgFrames -eq 0 -and $Probe.RawFrames -eq 0) {
-        Write-ToolLog '    Reading: no format delivered frames. USB, cable, driver or another app holding the camera; not a decoder problem.' 'Magenta'
-    }
-    else {
-        Write-ToolLog '    Reading: frames arrived in MJPEG and raw formats. The Media Foundation path is healthy.' 'Green'
-    }
+    if ($Probe.Error) { Write-ToolLog ('    probe error: ' + $Probe.Error) }
+    Write-ToolLog ('    Reading: ' + (Get-ProbeSentence $Probe))
 }
 
 # ------------------------------------------------------------- detection
@@ -617,6 +663,7 @@ function Test-MediaFoundation {
     Write-ToolLog ('  HardwareMFT EnableDecoders: ' + $decodersText)
 
     $vendorMjpeg = @()
+    $vendorNamesAll = @()
     foreach ($view in $views) {
         $catPath = $view.Classes + '\MediaFoundation\Transforms\Categories\d6c02d4b-6833-45b4-971a-05a4b04bab91'
         if (-not (Test-RegKey $catPath)) { $catPath = $view.Classes + '\MediaFoundation\Transforms\Categories\{d6c02d4b-6833-45b4-971a-05a4b04bab91}' }
@@ -636,21 +683,24 @@ function Test-MediaFoundation {
                 $vendorMjpeg += ($name + ' [' + $view.Name + '] ' + $clean)
             }
         }
+        $vendorNamesAll += $vendorNames
         Write-ToolLog ('  Registered video decoders (' + $view.Name + '): ' + $members.Count + '; vendor MJPEG decoders: ' + $(if ($vendorNames.Count -gt 0) { ($vendorNames | Select-Object -Unique) -join ', ' } else { 'none' }))
     }
     foreach ($v in $vendorMjpeg) { Write-ToolLog ('    ' + $v) }
+    Write-ProbeLog $script:Probe $script:Pass
 
-    Write-ProbeResult $script:Probe $script:Pass
-
-    $probe = $script:Probe
-    $mjpgBroken = ($probe.Performed -and $probe.MjpgRows -gt 0 -and $probe.MjpgFrames -eq 0 -and $probe.RawFrames -gt 0)
-    $mjpgHealthy = ($probe.Performed -and $probe.MjpgFrames -gt 0)
+    $verdict = Get-ProbeVerdict $script:Probe
+    $mjpgBroken = ($verdict -eq 'broken')
+    $mjpgHealthy = ($verdict -eq 'healthy')
     $decodersEnabled = ($null -eq $enableDecoders -or [int]$enableDecoders -ne 0)
+    $vendorLabel = (($vendorNamesAll | Select-Object -Unique) -join ', ')
 
     if (-not $decodersEnabled) {
         if ($vendorMjpeg.Count -gt 0) { Add-Finding 'A' 'INFO' 'Hardware decoders are already disabled (EnableDecoders=0); the vendor MJPEG decoder is inert.' }
         else { Add-Finding 'A' 'INFO' 'Hardware decoders are already disabled (EnableDecoders=0). Nothing to do.' }
-        if ($mjpgBroken) { Add-Finding 'A' 'WARN' 'MJPEG still delivers no frames although hardware decoders are disabled. That is outside what this tool repairs; send Delanclip Support the diagnostic report.' }
+        if ($mjpgBroken) {
+            Add-Finding 'A' 'WARN' 'MJPEG still delivers no frames although hardware decoders are disabled.' -Human 'The camera still gives no MJPEG picture although the decoder setting is already correct. This tool cannot repair that; please send the DelanCam1 Diagnostics report to Delanclip Support.'
+        }
         return
     }
 
@@ -665,12 +715,16 @@ function Test-MediaFoundation {
             'stop the Windows Camera Frame Server service so the change takes effect (it restarts on demand)',
             'probe MJPG again to verify'
         )
+        $human = 'A video decoder from your graphics driver'
+        if ($vendorLabel) { $human += ' (' + $vendorLabel + ')' }
+        $human += ' takes over the camera''s MJPEG picture inside Windows and delivers nothing, so apps that ask for MJPEG (OpenTrack, AITrack) see no picture.'
+        if (-not $mjpgBroken) { $human = 'A video decoder from your graphics driver (' + $vendorLabel + ') is set up to take over the camera''s MJPEG picture inside Windows. This is a known cause of "no picture" in OpenTrack and AITrack.' }
         Add-Finding 'A' 'FIX' ('Disable hardware Media Foundation decoders because ' + $reason + '.') $plan {
             $file = Backup-RegKey $hardwareMftKey 'A-HardwareMFT'
             Set-RegDwordWithUndo $hardwareMftKey 'EnableDecoders' 0 $file
             Stop-FrameServerServices
             $script:AppliedAreas['A'] = $true
-        }
+        } @{} -Human $human -Fix 'Tell Windows to use its own MJPEG decoder instead (one setting, fully reversible).'
     }
     elseif ($vendorMjpeg.Count -gt 0) {
         Add-Finding 'A' 'INFO' 'A vendor MJPEG decoder is registered but the probe shows MJPEG streaming normally. Left as is.'
@@ -692,6 +746,7 @@ function Test-VfwCodecs {
         $toRestore = @()
         $planLines = @()
         $manual = @()
+        $manualDlls = @()
         $nonStock = @()
         foreach ($entry in $expectedVfw.GetEnumerator()) {
             $name = $entry.Key
@@ -705,16 +760,18 @@ function Test-VfwCodecs {
                 $currentPath = Get-CleanPath $currentPath
                 if (Test-Path -LiteralPath $currentPath) { $nonStock += ($name + '=' + $current); continue }
                 if (Test-Path -LiteralPath $stockPath) { $toRestore += @{ Name = $name; Value = $stockDll; Was = $current }; $planLines += ($name + ' = ' + $stockDll + ' (currently ' + $current + ', file missing)') }
-                else { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')') }
+                else { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')'); $manualDlls += $stockDll }
             }
             else {
                 if (Test-Path -LiteralPath $stockPath) { $toRestore += @{ Name = $name; Value = $stockDll; Was = $null }; $planLines += ($name + ' = ' + $stockDll + ' (missing)') }
-                else { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')') }
+                else { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')'); $manualDlls += $stockDll }
             }
         }
         foreach ($line in $planLines) { Write-ToolLog ('    missing or broken: ' + $line) }
         if ($nonStock.Count -gt 0) { Add-Finding ('B-' + $view.Name) 'INFO' ('Non-stock but existing codec entries left as is: ' + ($nonStock -join ', ')) }
-        if ($manual.Count -gt 0) { Add-Finding ('B-' + $view.Name) 'MANUAL' ('Codec DLL missing from Windows itself, cannot register it: ' + ($manual -join '; ') + '. Run "sfc /scannow" as administrator, then run this tool again.') }
+        if ($manual.Count -gt 0) {
+            Add-Finding ('B-' + $view.Name) 'MANUAL' ('Codec DLL missing from Windows itself, cannot register it: ' + ($manual -join '; ') + '.') -Human ('A Windows system file is missing (' + (($manualDlls | Select-Object -Unique) -join ', ') + '). Open Command Prompt as administrator, run "sfc /scannow", wait for it to finish, then run this tool again.')
+        }
         if ($toRestore.Count -gt 0) {
             $plan = @(('reg export "' + $key + '" (backup)')) + ($planLines | ForEach-Object { 'reg add ' + $key + ' /v ' + $_ })
             $action = {
@@ -723,7 +780,8 @@ function Test-VfwCodecs {
                 foreach ($item in $Ctx.List) { Set-RegStringWithUndo $Ctx.Key $item.Name $item.Value $file }
                 $script:AppliedAreas['B'] = $true
             }
-            Add-Finding ('B-' + $view.Name) 'FIX' ('Restore ' + $toRestore.Count + ' stock VFW codec entr' + $(if ($toRestore.Count -eq 1) { 'y' } else { 'ies' }) + ' in the ' + $view.Name + ' Drivers32 list: ' + (($toRestore | ForEach-Object { $_.Name }) -join ', ') + '.') $plan $action @{ Key = $key; List = $toRestore; View = $view.Name }
+            $human = 'Windows has lost part of its standard video codec list (' + $view.Name + ' programs). OpenTrack and AITrack need it to convert the camera picture, so they fail even with MJPEG off.'
+            Add-Finding ('B-' + $view.Name) 'FIX' ('Restore ' + $toRestore.Count + ' stock VFW codec entr' + $(if ($toRestore.Count -eq 1) { 'y' } else { 'ies' }) + ' in the ' + $view.Name + ' Drivers32 list: ' + (($toRestore | ForEach-Object { $_.Name }) -join ', ') + '.') $plan $action @{ Key = $key; List = $toRestore; View = $view.Name } -Human $human -Fix ('Put the ' + $toRestore.Count + ' missing standard entr' + $(if ($toRestore.Count -eq 1) { 'y' } else { 'ies' }) + ' back (the codec files themselves are still in Windows).')
         }
         else {
             Add-Finding ('B-' + $view.Name) 'INFO' ('All nine stock vidc.* entries are present in the ' + $view.Name + ' view.')
@@ -735,6 +793,7 @@ function Test-DirectShow {
     Write-Section 'C. DirectShow: dead filters, ghost cameras and core components'
     $needPostCleanup = $false
     $treatAsFindings = @()
+    $allDeadNames = @()
 
     foreach ($view in $views) {
         Write-ToolLog ('  ' + $view.Name + ' view')
@@ -743,19 +802,25 @@ function Test-DirectShow {
         # Core components -----------------------------------------------------
         $coreMissing = @()
         $coreFileMissing = @()
+        $coreFiles = @()
         foreach ($c in $coreComponents) {
             $dll = Get-InprocServer $view.Classes $c.C
             $state = Get-FileState $dll
             $treatAs = Get-RegValue ($view.Classes + '\CLSID\' + $c.C + '\TreatAs') '(default)'
             if (-not $dll -or $state -eq 'DLL MISSING') {
                 if (Test-Path -LiteralPath (Join-Path $view.SysDir $c.File)) { $coreMissing += ($c.N + ' (' + $c.File + ')'); $needCoreReg = $true }
-                else { $coreFileMissing += ($c.File + ' missing from ' + $view.SysDir) }
+                else { $coreFileMissing += ($c.File + ' missing from ' + $view.SysDir); $coreFiles += $c.File }
             }
             if ($treatAs) { $treatAsFindings += @{ View = $view; Name = $c.N; Clsid = $c.C; Target = [string]$treatAs } }
         }
-        if ($coreMissing.Count -gt 0) { Write-ToolLog ('    core components not registered: ' + ($coreMissing -join ', ')) 'Yellow' }
+        if ($coreMissing.Count -gt 0) { Write-ToolLog ('    core components not registered: ' + ($coreMissing -join ', ')) }
         else { Write-ToolLog '    core components: all registered' }
-        if ($coreFileMissing.Count -gt 0) { Add-Finding ('C-core-' + $view.Name) 'MANUAL' ('DirectShow system file(s) missing from Windows: ' + (($coreFileMissing | Select-Object -Unique) -join '; ') + '. Run "sfc /scannow" as administrator.') }
+        if ($coreFileMissing.Count -gt 0) {
+            Add-Finding ('C-core-' + $view.Name) 'MANUAL' ('DirectShow system file(s) missing from Windows: ' + (($coreFileMissing | Select-Object -Unique) -join '; ') + '.') -Human ('A Windows video component file is missing (' + (($coreFiles | Select-Object -Unique) -join ', ') + '). Open Command Prompt as administrator, run "sfc /scannow", wait for it to finish, then run this tool again.')
+        }
+        if ($coreMissing.Count -gt 0) {
+            Add-Finding ('C-corereg-' + $view.Name) 'FIX' ('DirectShow core components not registered (' + $view.Name + '): ' + ($coreMissing -join ', ') + '. Re-registered by the cleanup step.') @() { param($Ctx) } @{} -Human ('Some of Windows''s own video components are no longer registered (' + $view.Name + ' programs), so camera apps cannot build their video connection.') -Fix 'Register Windows''s own video components again (built-in files, nothing new is installed).'
+        }
 
         # Ghost virtual cameras ---------------------------------------------
         $instanceRoot = $view.Classes + '\CLSID\' + $catVideoInput + '\Instance'
@@ -771,7 +836,7 @@ function Test-DirectShow {
             $state = Get-FileState $dll
             if ($state -eq 'DLL MISSING' -or $state -eq 'no InprocServer32') {
                 $deadCams += @{ Entry = $entry; Sub = $sub; Clsid = $clsid; Name = $friendly; Dll = $dll; State = $state }
-                Write-ToolLog ('    ghost camera: "' + $friendly + '" ' + $clsid + ' -> ' + $dll + ' [' + $state + ']') 'Yellow'
+                Write-ToolLog ('    ghost camera: "' + $friendly + '" ' + $clsid + ' -> ' + $dll + ' [' + $state + ']')
             }
             else {
                 $liveCams += ($friendly + ' -> ' + (Get-CleanPath $dll))
@@ -797,7 +862,7 @@ function Test-DirectShow {
             if ($state -ne 'DLL MISSING' -and $state -ne 'no InprocServer32') { continue }
             if ($friendly -match $ignoreDeadFilters) { continue }
             $deadFilters += @{ Entry = $entry; Sub = $sub; Clsid = $clsid; Name = $friendly; Dll = $dll; State = $state }
-            Write-ToolLog ('    dead filter: "' + $friendly + '" ' + $clsid + ' -> ' + $dll + ' [' + $state + ']') 'Yellow'
+            Write-ToolLog ('    dead filter: "' + $friendly + '" ' + $clsid + ' -> ' + $dll + ' [' + $state + ']')
         }
         Write-ToolLog ('    registered filters: ' + $filterSubs.Count + ', dead: ' + $deadFilters.Count + ', ghost cameras: ' + $deadCams.Count)
 
@@ -824,7 +889,14 @@ function Test-DirectShow {
                 }
                 $script:AppliedAreas['C'] = $true
             }
-            Add-Finding ('C-' + $view.Name) 'FIX' ('Remove ' + $dead.Count + ' dead DirectShow registration(s) in the ' + $view.Name + ' view: ' + (($dead | ForEach-Object { '"' + $_.Name + '"' }) -join ', ') + '.') $plan $action @{ Dead = $dead; View = $view }
+            $names = @($dead | ForEach-Object { $_.Name } | Select-Object -Unique)
+            $newNames = @($names | Where-Object { $allDeadNames -notcontains $_ })
+            $allDeadNames += $newNames
+            $human = ''
+            if ($newNames.Count -gt 0) {
+                $human = 'Leftovers of removed camera software or codec packs are still registered in Windows: ' + ($newNames -join ', ') + '. Their files are gone, but the entries still confuse OpenTrack and AITrack when they connect to the camera.'
+            }
+            Add-Finding ('C-' + $view.Name) 'FIX' ('Remove ' + $dead.Count + ' dead DirectShow registration(s) in the ' + $view.Name + ' view: ' + (($dead | ForEach-Object { '"' + $_.Name + '"' }) -join ', ') + '.') $plan $action @{ Dead = $dead; View = $view } -Human $human -Fix 'Remove the leftover entries and refresh Windows''s own video components.'
         }
         if ($needCoreReg) { $needPostCleanup = $true }
     }
@@ -837,7 +909,7 @@ function Test-DirectShow {
             Remove-RegKeyWithBackup $Ctx.Key ('D-TreatAs-' + $Ctx.View + '-' + $Ctx.Name)
             $script:AppliedAreas['D'] = $true
         }
-        Add-Finding ('D-TreatAs-' + $t.View.Name) 'FIX' ('Remove the TreatAs redirection on "' + $t.Name + '" (' + $t.View.Name + ') that points to ' + $t.Target + '.') @(('reg export + reg delete "' + $key + '"')) $action @{ Key = $key; Name = $t.Name; View = $t.View.Name }
+        Add-Finding ('D-TreatAs-' + $t.View.Name) 'FIX' ('Remove the TreatAs redirection on "' + $t.Name + '" (' + $t.View.Name + ') that points to ' + $t.Target + '.') @(('reg export + reg delete "' + $key + '"')) $action @{ Key = $key; Name = $t.Name; View = $t.View.Name } -Human ('A codec pack redirected one of Windows''s own video components (' + $t.Name + ') to itself, and that target is no longer usable.') -Fix 'Remove the redirection so Windows uses its own component again.'
     }
 
     if ($needPostCleanup) {
@@ -852,10 +924,10 @@ function Test-DirectShow {
             foreach ($view in $views) {
                 foreach ($dllName in $coreDlls) {
                     $dllPath = Join-Path $view.SysDir $dllName
-                    if (-not (Test-Path -LiteralPath $dllPath)) { Write-ToolLog ('    not present, skipped: ' + $dllPath) 'Magenta'; continue }
+                    if (-not (Test-Path -LiteralPath $dllPath)) { Write-ToolLog ('    not present, skipped: ' + $dllPath); continue }
                     $code = Invoke-Regsvr32 $view.Regsvr $dllPath
                     if ($code -eq 0) { Write-ToolLog ('    registered: ' + $dllPath) }
-                    else { Write-ToolLog ('    regsvr32 returned ' + $code + ' for ' + $dllPath) 'Magenta' }
+                    else { Write-ToolLog ('    regsvr32 returned ' + $code + ' for ' + $dllPath) }
                 }
             }
             Add-Undo 'rem The DirectShow core re-registration is idempotent and needs no undo.'
@@ -887,7 +959,11 @@ function Test-DecoderPreferences {
                     $script:AppliedAreas['D'] = $true
                 }
                 $plan = @(('reg export "' + $prefKey + '"'), ('reg add ' + $prefKey + ' /v ' + $mjpgSubtype + ' /d ' + $stockMjpgDecoder))
-                Add-Finding ('D-MJPG-' + $view.Name) 'FIX' ('Preferred MJPG decoder is ' + $mjpgTarget + ' (' + $tName + ', ' + $tState + ') instead of the Windows MJPEG Decompressor; restore it.') $plan $action @{ Key = $prefKey; View = $view.Name }
+                $human = 'Windows is told to decode the camera''s MJPEG picture with a decoder from a codec pack instead of its own'
+                if ($tName -ne '(no name registered)') { $human += ' (' + $tName + ')' }
+                if ($tState -ne 'Windows') { $human += ', and that decoder is no longer usable' }
+                $human += '. This affects ' + $view.Name + ' programs.'
+                Add-Finding ('D-MJPG-' + $view.Name) 'FIX' ('Preferred MJPG decoder is ' + $mjpgTarget + ' (' + $tName + ', ' + $tState + ') instead of the Windows MJPEG Decompressor; restore it.') $plan $action @{ Key = $prefKey; View = $view.Name } -Human $human -Fix 'Point Windows back at its own MJPEG decoder.'
             }
         }
         else { Write-ToolLog ('  ' + $view.Name + ' Preferred MJPG -> not set (Windows default applies)') }
@@ -902,7 +978,7 @@ function Test-DecoderPreferences {
             if ($state -eq 'DLL MISSING' -or $state -eq 'no InprocServer32') { $dangling += @{ Name = $name; Target = $target; State = $state } }
         }
         if ($dangling.Count -gt 0) {
-            foreach ($d in $dangling) { Write-ToolLog ('    dangling Preferred entry: ' + $d.Name + ' -> ' + $d.Target + ' [' + $d.State + ']') 'Yellow' }
+            foreach ($d in $dangling) { Write-ToolLog ('    dangling Preferred entry: ' + $d.Name + ' -> ' + $d.Target + ' [' + $d.State + ']') }
             $action = {
                 param($Ctx)
                 $file = Backup-RegKey $Ctx.Key ('D-Preferred-' + $Ctx.View)
@@ -910,14 +986,14 @@ function Test-DecoderPreferences {
                 $script:AppliedAreas['D'] = $true
             }
             $plan = @(('reg export "' + $prefKey + '"')) + @($dangling | ForEach-Object { 'reg delete ' + $prefKey + ' /v ' + $_.Name })
-            Add-Finding ('D-Preferred-' + $view.Name) 'FIX' ('Delete ' + $dangling.Count + ' Preferred decoder entr' + $(if ($dangling.Count -eq 1) { 'y' } else { 'ies' }) + ' pointing at decoders that no longer exist (' + $view.Name + ').') $plan $action @{ Key = $prefKey; View = $view.Name; List = $dangling }
+            Add-Finding ('D-Preferred-' + $view.Name) 'FIX' ('Delete ' + $dangling.Count + ' Preferred decoder entr' + $(if ($dangling.Count -eq 1) { 'y' } else { 'ies' }) + ' pointing at decoders that no longer exist (' + $view.Name + ').') $plan $action @{ Key = $prefKey; View = $view.Name; List = $dangling } -Human ('Windows still prefers ' + $dangling.Count + ' video decoder' + $(if ($dangling.Count -eq 1) { '' } else { 's' }) + ' from software that has been removed (' + $view.Name + ' programs).') -Fix 'Remove those stale preferences so Windows falls back to its own decoders.'
         }
 
         $dnuNames = @(Get-RegValueNames $dnuKey | Where-Object { $_ -ne '(default)' })
         if ($dnuNames.Count -gt 0) {
             foreach ($n in $dnuNames) {
                 $dn = Get-RegValue ($view.Classes + '\CLSID\' + $n) '(default)'
-                Write-ToolLog ('    DoNotUse blocks: ' + $n + ' ' + $dn) 'Yellow'
+                Write-ToolLog ('    DoNotUse blocks: ' + $n + ' ' + $dn)
             }
             $action = {
                 param($Ctx)
@@ -926,7 +1002,7 @@ function Test-DecoderPreferences {
                 $script:AppliedAreas['D'] = $true
             }
             $plan = @(('reg export "' + $dnuKey + '"')) + @($dnuNames | ForEach-Object { 'reg delete ' + $dnuKey + ' /v ' + $_ })
-            Add-Finding ('D-DoNotUse-' + $view.Name) 'FIX' ('Clear ' + $dnuNames.Count + ' DoNotUse entr' + $(if ($dnuNames.Count -eq 1) { 'y' } else { 'ies' }) + ' telling DirectShow to skip filters (' + $view.Name + ').') $plan $action @{ Key = $dnuKey; View = $view.Name; List = $dnuNames }
+            Add-Finding ('D-DoNotUse-' + $view.Name) 'FIX' ('Clear ' + $dnuNames.Count + ' DoNotUse entr' + $(if ($dnuNames.Count -eq 1) { 'y' } else { 'ies' }) + ' telling DirectShow to skip filters (' + $view.Name + ').') $plan $action @{ Key = $dnuKey; View = $view.Name; List = $dnuNames } -Human ('A codec pack told Windows to skip ' + $dnuNames.Count + ' of its own video component' + $(if ($dnuNames.Count -eq 1) { '' } else { 's' }) + ' (' + $view.Name + ' programs).') -Fix 'Remove that block.'
         }
         else { Write-ToolLog ('  ' + $view.Name + ' DoNotUse: empty') }
     }
@@ -941,34 +1017,34 @@ function Test-ConsentAndServices {
     $hklmAll = Get-RegValue ('HKLM\' + $consentBase) 'Value'
     $hklmDesktop = Get-RegValue ('HKLM\' + $consentBase + '\NonPackaged') 'Value'
     Write-ToolLog ('  Machine camera consent: all apps = ' + $(if ($hklmAll) { $hklmAll } else { 'not set' }) + ', desktop apps = ' + $(if ($hklmDesktop) { $hklmDesktop } else { 'not set' }))
-    if ($hklmAll -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' 'Camera access is denied for the whole PC. Settings > Privacy & security > Camera > "Camera access" must be On.' }
-    if ($hklmDesktop -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' 'Camera access is denied for desktop apps on the whole PC. Settings > Privacy & security > Camera > "Let desktop apps access your camera" must be On.' }
+    if ($hklmAll -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' 'Camera access is denied for the whole PC (HKLM).' -Human 'Camera access is switched off for the whole PC. Open Settings > Privacy & security > Camera and turn "Camera access" on, then run this tool again.' }
+    if ($hklmDesktop -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' 'Camera access is denied for desktop apps on the whole PC (HKLM NonPackaged).' -Human 'Desktop apps are not allowed to use the camera on this PC. Open Settings > Privacy & security > Camera and turn "Let desktop apps access your camera" on, then run this tool again.' }
     foreach ($h in (Get-UserHives)) {
         if (-not $h.HiveLoaded) { continue }
         $uAll = Get-RegValue ('HKU\' + $h.Sid + '\' + $consentBase) 'Value'
         $uDesktop = Get-RegValue ('HKU\' + $h.Sid + '\' + $consentBase + '\NonPackaged') 'Value'
         Write-ToolLog ('  User ' + $h.User + ': all apps = ' + $(if ($uAll) { $uAll } else { 'not set' }) + ', desktop apps = ' + $(if ($uDesktop) { $uDesktop } else { 'not set' }))
-        if ($uAll -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' ('User ' + $h.User + ': camera access is Off. Settings > Privacy & security > Camera > "Let apps access your camera" must be On.') }
-        if ($uDesktop -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' ('User ' + $h.User + ': desktop apps are denied the camera; OpenTrack and AITrack are desktop apps. Settings > Privacy & security > Camera > "Let desktop apps access your camera" must be On.') }
+        if ($uAll -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' ('User ' + $h.User + ': camera consent Deny.') -Human ('Camera access is switched off for the Windows user "' + $h.User + '". Open Settings > Privacy & security > Camera and turn "Let apps access your camera" on, then run this tool again.') }
+        if ($uDesktop -eq 'Deny') { Add-Finding 'E-consent' 'MANUAL' ('User ' + $h.User + ': desktop apps camera consent Deny.') -Human ('Desktop apps such as OpenTrack and AITrack are not allowed to use the camera for the Windows user "' + $h.User + '". Open Settings > Privacy & security > Camera and turn "Let desktop apps access your camera" on, then run this tool again.') }
     }
     $polCam = Get-RegValue 'HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' 'LetAppsAccessCamera'
-    if ($polCam -eq 2) { Add-Finding 'E-policy' 'MANUAL' 'Group Policy LetAppsAccessCamera = 2 forces camera access off. A policy set by an administrator or a tweak tool must be removed first.' }
+    if ($polCam -eq 2) { Add-Finding 'E-policy' 'MANUAL' 'Group Policy LetAppsAccessCamera = 2 (force deny).' -Human 'A Windows policy forces camera access off (LetAppsAccessCamera). It was set by an administrator or a "privacy tweak" tool and has to be removed there first.' }
     $allowCam = Get-RegValue 'HKLM\SOFTWARE\Policies\Microsoft\Camera' 'AllowCamera'
-    if ($allowCam -eq 0) { Add-Finding 'E-policy' 'MANUAL' 'Policy AllowCamera = 0 disables the camera. A policy set by an administrator or a tweak tool must be removed first.' }
+    if ($allowCam -eq 0) { Add-Finding 'E-policy' 'MANUAL' 'Policy AllowCamera = 0 disables the camera.' -Human 'A Windows policy disables the camera (AllowCamera). It was set by an administrator or a "privacy tweak" tool and has to be removed there first.' }
     $disableWebcam = Get-RegValue 'HKLM\SOFTWARE\Policies\Microsoft\Windows\Webcam' 'DisableWebcam'
-    if ($disableWebcam -eq 1) { Add-Finding 'E-policy' 'MANUAL' 'Policy DisableWebcam = 1 disables the camera. A policy set by an administrator or a tweak tool must be removed first.' }
+    if ($disableWebcam -eq 1) { Add-Finding 'E-policy' 'MANUAL' 'Policy DisableWebcam = 1 disables the camera.' -Human 'A Windows policy disables the webcam (DisableWebcam). It was set by an administrator or a "privacy tweak" tool and has to be removed there first.' }
 
     $fs = Get-FrameServerState
-    if (-not $fs.Present) { Add-Finding 'E-service' 'WARN' 'The Windows Camera Frame Server service is not present on this system.' }
+    if (-not $fs.Present) { Add-Finding 'E-service' 'WARN' 'The Windows Camera Frame Server service is not present on this system.' -Human 'The Windows camera service (Frame Server) is missing from this PC. That is unusual; please send the DelanCam1 Diagnostics report to Delanclip Support.' }
     else {
         Write-ToolLog ('  Windows Camera Frame Server: ' + $fs.Status + ', start type ' + $fs.StartType + ' (Manual is the Windows default; it starts on demand)')
         if ($fs.StartType -match '(?i)disabled') {
-            Add-Finding 'E-service' 'FIX' 'The Windows Camera Frame Server service is disabled; every Media Foundation camera app fails without it. Set it back to Manual.' @('sc config FrameServer start= demand') {
+            Add-Finding 'E-service' 'FIX' 'The Windows Camera Frame Server service is disabled. Set it back to Manual.' @('sc config FrameServer start= demand') {
                 Set-FrameServerManual
                 Add-Undo 'sc config FrameServer start= disabled'
                 Write-ToolLog '    FrameServer start type set to Manual'
                 $script:AppliedAreas['E'] = $true
-            }
+            } @{} -Human 'The Windows camera service (Frame Server) has been disabled, usually by a "tweak" or "debloat" tool. Without it no camera app can get a picture.' -Fix 'Set the service back to its normal start mode.'
         }
     }
 
@@ -982,28 +1058,42 @@ function Test-ConsentAndServices {
 }
 
 function Invoke-Detection {
-    param([string]$Pass)
+    # Runs every check. Quiet=true prints nothing per step (verification pass).
+    param([string]$Pass, [switch]$Quiet)
     $script:Pass = $Pass
     $script:Findings.Clear()
-    $script:Probe = Invoke-FormatProbe
-    Test-MediaFoundation
-    Test-VfwCodecs
-    Test-DirectShow
-    Test-DecoderPreferences
-    Test-ConsentAndServices
+    $steps = @(
+        @{ Label = 'Camera test'; Run = { $script:Probe = Invoke-FormatProbe } },
+        @{ Label = 'Windows video decoders'; Run = { Test-MediaFoundation } },
+        @{ Label = 'Video codec list'; Run = { Test-VfwCodecs } },
+        @{ Label = 'Camera software leftovers'; Run = { Test-DirectShow } },
+        @{ Label = 'Decoder settings, camera privacy, services'; Run = { Test-DecoderPreferences; Test-ConsentAndServices } }
+    )
+    $i = 0
+    foreach ($step in $steps) {
+        $i++
+        $before = $script:Findings.Count
+        if (-not $Quiet) { Write-Host ('  [' + $i + '/' + $steps.Count + '] ' + $step.Label + ' ... ') -NoNewline }
+        & $step.Run
+        if (-not $Quiet) {
+            $outcome = 'OK'
+            $color = 'Green'
+            if ($i -eq 1) { $outcome = Get-ProbeSentence $script:Probe; if ((Get-ProbeVerdict $script:Probe) -ne 'healthy') { $color = 'Yellow' } }
+            else {
+                $new = @($script:Findings | Select-Object -Skip $before | Where-Object { $_.Severity -ne 'INFO' })
+                if ($new.Count -gt 0) { $outcome = 'needs attention'; $color = 'Yellow' }
+            }
+            Write-Host $outcome -ForegroundColor $color
+            Write-ToolLog ('>> [' + $i + '/' + $steps.Count + '] ' + $step.Label + ': ' + $outcome)
+        }
+    }
 }
 
-function Write-FindingsSummary {
-    param([string]$Title)
-    Write-Section $Title
-    $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
-    $manual = @($script:Findings | Where-Object { $_.Severity -eq 'MANUAL' -or $_.Severity -eq 'WARN' })
-    if ($fixes.Count -eq 0 -and $manual.Count -eq 0) {
-        Write-ToolLog '  CLEAN: nothing to repair. The Windows video pipeline checks all pass.' 'Green'
-    }
-    foreach ($f in $fixes) { Write-ToolLog ('  [FIX] ' + $f.Id + ': ' + $f.Text) 'Yellow' }
-    foreach ($f in $manual) { Write-ToolLog ('  [' + $f.Severity + '] ' + $f.Id + ': ' + $f.Text) 'Magenta' }
-    return $fixes
+function Get-ScreenFindings {
+    # Findings shown to the person: FIX with a Human sentence, and MANUAL/WARN.
+    $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' -and $_.Human })
+    $manual = @($script:Findings | Where-Object { ($_.Severity -eq 'MANUAL' -or $_.Severity -eq 'WARN') -and $_.Human })
+    return @{ Fixes = $fixes; Manual = $manual }
 }
 
 function Write-UndoScript {
@@ -1011,28 +1101,86 @@ function Write-UndoScript {
     $lines.Add('@echo off')
     $lines.Add('setlocal')
     $lines.Add('title Delanclip DelanCam1 Fix Tool - UNDO')
-    $lines.Add('echo This restores the registry state that DelanCam1-FixTool saved on ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '.')
-    $lines.Add('echo It re-imports the .reg backups in this folder and reverts the settings the tool changed.')
+    $lines.Add('set "QUIET=0"')
+    $lines.Add('if /i "%~1"=="/quiet" set "QUIET=1"')
+    $lines.Add('echo This puts your Windows settings back exactly as they were before')
+    $lines.Add('echo the DelanCam1 Fix Tool repaired them on ' + (Get-Date -Format 'yyyy-MM-dd HH:mm') + '.')
     $lines.Add('echo.')
     $lines.Add('fltmc >nul 2>&1')
     $lines.Add('if not %ERRORLEVEL%==0 (')
     $lines.Add('    echo Please right-click UNDO.cmd and choose "Run as administrator".')
-    $lines.Add('    pause')
+    $lines.Add('    if "%QUIET%"=="0" pause')
     $lines.Add('    exit /b 1')
     $lines.Add(')')
-    $lines.Add('echo Press any key to restore the previous state, or close this window to keep the repairs.')
-    $lines.Add('pause')
+    $lines.Add('if "%QUIET%"=="0" (')
+    $lines.Add('    echo Press any key to undo the repair, or close this window to keep it.')
+    $lines.Add('    pause')
+    $lines.Add(')')
     $lines.Add('cd /d "%~dp0"')
+    $lines.Add('set "FAILED=0"')
     $undo = @($script:Undo)
     [array]::Reverse($undo)
-    foreach ($cmd in $undo) { $lines.Add($cmd) }
+    foreach ($cmd in $undo) {
+        if ($cmd -like 'rem *') { $lines.Add($cmd); continue }
+        $lines.Add($cmd + ' >nul 2>&1 || set "FAILED=1"')
+    }
     $lines.Add('net stop FrameServer >nul 2>&1')
     $lines.Add('echo.')
-    $lines.Add('echo Done. Restart Windows (Restart, not Shut down) to complete the rollback.')
-    $lines.Add('pause')
+    $lines.Add('if "%FAILED%"=="1" (')
+    $lines.Add('    echo Some steps could not be undone. Please send this folder to Delanclip Support.')
+    $lines.Add(') else (')
+    $lines.Add('    echo Done. Your previous settings are back. Restart Windows to finish.')
+    $lines.Add(')')
+    $lines.Add('if "%QUIET%"=="0" pause')
+    $lines.Add('exit /b %FAILED%')
     $path = Join-Path $backupDir 'UNDO.cmd'
     [System.IO.File]::WriteAllText($path, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
     Write-ToolLog ('  UNDO.cmd written: ' + $path)
+}
+
+function Get-LatestBackup {
+    # The most recent backup folder on the Desktop that still has its UNDO.cmd.
+    try {
+        $dirs = @(Get-ChildItem -LiteralPath $desktop -Directory -Filter ($backupPrefix + '*') -ErrorAction Stop | Sort-Object Name -Descending)
+        foreach ($d in $dirs) {
+            $undo = Join-Path $d.FullName 'UNDO.cmd'
+            if (Test-Path -LiteralPath $undo) { return $d.FullName }
+        }
+    }
+    catch {}
+    return $null
+}
+
+function Invoke-UndoFlow {
+    param([string]$Folder)
+    $undoPath = Join-Path $Folder 'UNDO.cmd'
+    Write-Screen ''
+    Write-Screen ('Undoing the repair saved in: ' + $Folder)
+    $code = Invoke-UndoScript $undoPath
+    if ($code -eq 0) {
+        Write-Screen 'Done. Your previous Windows settings are back.' 'Green'
+        Write-Screen 'Restart Windows (use Restart, not Shut down) to finish.'
+    }
+    else {
+        Write-Screen 'Some steps could not be undone. Please send that folder to Delanclip Support.' 'Red'
+    }
+    return $code
+}
+
+function Write-NextSteps {
+    param([bool]$NeedRestart)
+    Write-Screen ''
+    Write-Screen 'WHAT TO DO NEXT' 'Cyan'
+    if ($NeedRestart) {
+        Write-Screen '  1. Restart Windows. Use "Restart", not "Shut down": the repair only takes full effect after a real restart.'
+        if ($script:FastStartup) { Write-Screen '     (This PC has Fast Startup on, so "Shut down" would keep the old state in memory.)' }
+        Write-Screen '  2. After the restart, run the DelanCam1 Diagnostics tool again and send the new report to Delanclip Support.'
+        Write-Screen '  3. Start OpenTrack, pick DelanCam1 again in the camera list and press Start.'
+    }
+    else {
+        Write-Screen '  1. Close and reopen OpenTrack or AITrack, pick DelanCam1 again in the camera list and press Start.'
+        Write-Screen '  2. If it still does not work, restart Windows, run the DelanCam1 Diagnostics tool again and send the report to Delanclip Support.'
+    }
 }
 
 # ------------------------------------------------------------------- main
@@ -1042,55 +1190,100 @@ try {
         throw 'This tool must run in 64-bit PowerShell on 64-bit Windows; the 32-bit PowerShell sees a redirected registry.'
     }
 
-    Write-ToolLog ('Delanclip DelanCam1 Fix Tool ' + $toolVersion)
+    Write-ToolLog ('Delanclip DelanCam1 Fix Tool v' + $toolVersion)
     Write-ToolLog ('Started: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz') + '   Mode: ' + $mode + '   Administrator: ' + $isAdmin + '   User: ' + [Environment]::UserName)
     Write-ToolLog ('Windows build: ' + [Environment]::OSVersion.Version.ToString() + '   64-bit OS: ' + [Environment]::Is64BitOperatingSystem)
     Write-ToolLog ('Log: ' + $script:LogPath)
-    if (-not $isAdmin -and $mode -eq 'apply') {
-        Write-ToolLog 'Apply mode needs administrator rights; falling back to check mode.' 'Magenta'
+    Write-Host ('Delanclip DelanCam1 Fix Tool v' + $toolVersion) -ForegroundColor Cyan
+    if (-not $isAdmin -and $mode -ne 'check') {
+        Write-Screen 'Administrator permission was not given, so the tool can only check, not change anything.' 'Yellow'
         $mode = 'check'
     }
 
-    Invoke-Detection 'before'
-    $fixes = @(Write-FindingsSummary 'RESULT OF THE CHECK')
+    # ---- undo of an earlier repair -----------------------------------------
+    $latestBackup = Get-LatestBackup
+    if ($mode -eq 'undo') {
+        if (-not $latestBackup) { Write-Screen 'No earlier repair by this tool was found on the Desktop, so there is nothing to undo.' 'Yellow'; exit 2 }
+        $code = Invoke-UndoFlow $latestBackup
+        if ($code -eq 0) { exit 0 } else { exit 2 }
+    }
+    if ($latestBackup -and $isAdmin -and $mode -eq 'check') {
+        $when = (Split-Path $latestBackup -Leaf).Substring($backupPrefix.Length)
+        $whenText = $when
+        if ($when -match '^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})') { $whenText = $Matches[1] + '-' + $Matches[2] + '-' + $Matches[3] + ' at ' + $Matches[4] + ':' + $Matches[5] }
+        Write-Screen ''
+        Write-Screen ('This tool already repaired this PC on ' + $whenText + '.')
+        $choice = Read-Choice 'Press U to undo that repair, or any other key to check the PC again:'
+        if ($choice -eq 'U') {
+            $code = Invoke-UndoFlow $latestBackup
+            if ($code -eq 0) { exit 0 } else { exit 2 }
+        }
+    }
 
+    # ---- check -------------------------------------------------------------
+    Write-Host ''
+    Write-Host 'Checking your Windows video setup (about 15 seconds)...'
+    Invoke-Detection 'before'
+    $screen = Get-ScreenFindings
+    $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
+    $verdict = Get-ProbeVerdict $script:Probe
+
+    Write-Screen ''
     if ($fixes.Count -eq 0) {
-        Write-ToolLog ''
-        $manualLeft = @($script:Findings | Where-Object { $_.Severity -eq 'MANUAL' -or $_.Severity -eq 'WARN' })
-        if ($manualLeft.Count -gt 0) {
-            Write-ToolLog 'Nothing for this tool to repair automatically. The items marked MANUAL or WARN above need a person; follow their instructions, then run the tool again.' 'Yellow'
+        if ($screen.Manual.Count -gt 0) {
+            Write-Screen 'RESULT: nothing for this tool to repair, but something needs your attention:' 'Yellow'
+            foreach ($m in $screen.Manual) { Write-Screen ('  - ' + $m.Human) }
+            Write-Screen ''
+            Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
             exit 2
         }
-        Write-ToolLog 'No repairs are needed. If OpenTrack still cannot open DelanCam1, send Delanclip Support the diagnostic report and this log.' 'Green'
+        Write-Screen 'RESULT: everything this tool checks is in order. Nothing to repair.' 'Green'
+        if ($verdict -eq 'dead') {
+            Write-Screen 'The camera gave no picture in any format. That points to USB, cable or driver, which this tool does not repair.'
+        }
+        Write-Screen 'If OpenTrack still cannot open DelanCam1, run the DelanCam1 Diagnostics tool and send its report to Delanclip Support.'
+        Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
         exit 0
     }
 
-    Write-Section 'CHANGES THE APPLY STEP WOULD MAKE'
+    $n = $screen.Fixes.Count
+    Write-Screen ('RESULT: ' + $n + ' problem' + $(if ($n -eq 1) { '' } else { 's' }) + ' found that can stop OpenTrack or AITrack from opening DelanCam1.') 'Yellow'
+    $k = 0
+    foreach ($f in $screen.Fixes) {
+        $k++
+        Write-Screen ('  ' + $k + '. ' + $f.Human)
+        if ($f.Fix) { Write-Screen ('     Repair: ' + $f.Fix) }
+    }
+    if ($screen.Manual.Count -gt 0) {
+        Write-Screen ''
+        Write-Screen 'Also needs your attention (the tool cannot change this):'
+        foreach ($m in $screen.Manual) { Write-Screen ('  - ' + $m.Human) }
+    }
+    Write-Screen ''
+    Write-Screen 'Before any change, a backup folder with an UNDO script is created on your Desktop.'
+    Write-Screen 'Running this tool again later also offers to undo the repair.'
+    Write-Section 'CHANGES THE REPAIR WOULD MAKE (technical)'
     foreach ($f in $fixes) {
         Write-ToolLog ('  ' + $f.Id + ': ' + $f.Text)
         foreach ($p in $f.Plan) { Write-ToolLog ('      - ' + $p) }
     }
-    Write-ToolLog ''
-    Write-ToolLog ('  Backups and UNDO.cmd would go to: ' + $backupDir)
 
     if ($mode -ne 'apply') {
         if (-not $isAdmin) {
-            Write-ToolLog ''
-            Write-ToolLog 'Administrator rights are needed to apply these repairs. Run the tool again and accept the Windows prompt.' 'Magenta'
+            Write-Screen ''
+            Write-Screen 'To repair, run the tool again and answer Yes when Windows asks for permission.' 'Yellow'
+            Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
             exit 2
         }
         Write-Host ''
-        Write-Host 'Type APPLY and press Enter to make the changes listed above now.' -ForegroundColor Yellow
-        Write-Host 'Press Enter alone to exit without changing anything.'
-        $answer = ''
-        try { $answer = Read-Host 'Your choice' } catch { $answer = '' }
-        if (([string]$answer).Trim() -ne 'APPLY') {
-            Write-ToolLog ''
-            Write-ToolLog 'Nothing was changed. Run the tool again and type APPLY (or start it with /apply) to repair.' 'Yellow'
+        $answer = Read-Choice 'Repair now? Press Y for yes or N for no:'
+        if ($answer -ne 'Y') {
+            Write-Screen ''
+            Write-Screen 'Nothing was changed. Run the tool again whenever you want to repair.' 'Yellow'
+            Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
             exit 2
         }
         $mode = 'apply'
-        Write-ToolLog 'APPLY confirmed in the console.'
     }
 
     # ---- apply -------------------------------------------------------------
@@ -1104,46 +1297,71 @@ try {
     catch {}
     Write-Section 'APPLYING REPAIRS'
     Write-ToolLog ('  Backup folder: ' + $backupDir)
+    Write-Host ''
+    Write-Host 'Repairing...'
+    $k = 0
     foreach ($f in $fixes) {
-        Write-ToolLog ('  ' + $f.Id + ': ' + $f.Text) 'Yellow'
-        try { & $f.Action $f.Context }
+        Write-ToolLog ('  ' + $f.Id + ': ' + $f.Text)
+        $showLine = [bool]$f.Human
+        if ($showLine) { $k++; Write-Host ('  ' + $k + '. ' + $f.Fix + ' ... ') -NoNewline }
+        try {
+            & $f.Action $f.Context
+            if ($showLine) { Write-Host 'done' -ForegroundColor Green }
+            Write-ToolLog ('>> ' + $f.Id + ': done')
+        }
         catch {
             $script:ApplyErrors++
-            Write-ToolLog ('    FAILED: ' + $_.Exception.Message) 'Red'
+            if ($showLine) { Write-Host 'FAILED' -ForegroundColor Red }
+            Write-ToolLog ('    FAILED: ' + $_.Exception.Message)
         }
     }
     Write-UndoScript
 
-    Invoke-Detection 'after'
-    $remaining = @(Write-FindingsSummary 'VERIFICATION AFTER THE REPAIRS')
-
-    Write-Section 'WHAT TO DO NEXT'
-    $areas = @($script:AppliedAreas.Keys | Sort-Object)
-    if ($areas.Count -gt 0) { Write-ToolLog ('  Repairs applied in area(s): ' + ($areas -join ', ') + '. Backups and UNDO.cmd: ' + $backupDir) }
-    if ($script:ApplyErrors -gt 0) { Write-ToolLog ('  ' + $script:ApplyErrors + ' repair step(s) failed; see the FAILED lines above.') 'Red' }
-    $needRestart = ($script:AppliedAreas.ContainsKey('B') -or $script:AppliedAreas.ContainsKey('C') -or $script:AppliedAreas.ContainsKey('D') -or $script:AppliedAreas.ContainsKey('E'))
-    if ($needRestart) {
-        Write-ToolLog '  1. Restart Windows now using "Restart" (not "Shut down"). DirectShow changes only take full effect after a real restart.' 'Yellow'
-        if ($script:FastStartup) { Write-ToolLog '     Fast Startup is ON on this PC, so "Shut down" would keep the old driver state in memory.' 'Yellow' }
-        Write-ToolLog '  2. After the restart, run the DelanCam1 Diagnostics tool again and send the new report to Delanclip Support.'
-        Write-ToolLog '  3. Then test OpenTrack: select DelanCam1 again in the camera list and press Start.'
+    Write-Host ''
+    Write-Host 'Checking again ... ' -NoNewline
+    Invoke-Detection 'after' -Quiet
+    $after = Get-ScreenFindings
+    $remaining = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
+    if ($remaining.Count -eq 0 -and $script:ApplyErrors -eq 0) {
+        Write-Host 'all clear.' -ForegroundColor Green
+        Write-ToolLog '>> Verification: all clear'
+        if ((Get-ProbeVerdict $script:Probe) -eq 'healthy' -and $verdict -eq 'broken') { Write-Screen 'The camera now delivers an MJPEG picture.' 'Green' }
     }
     else {
-        Write-ToolLog '  1. Close and reopen OpenTrack or AITrack, select DelanCam1 again and press Start.'
-        Write-ToolLog '  2. If it still fails, restart Windows using "Restart" and run the DelanCam1 Diagnostics tool again for Delanclip Support.'
+        Write-Host 'some problems remain.' -ForegroundColor Yellow
+        foreach ($f in $after.Fixes) { Write-Screen ('  - still present: ' + $f.Human) 'Yellow' }
+        if ($script:ApplyErrors -gt 0) { Write-Screen ('  - ' + $script:ApplyErrors + ' repair step(s) failed. Please send the backup folder to Delanclip Support.') 'Yellow' }
     }
-    Write-ToolLog '  To undo everything this tool changed, run UNDO.cmd in the backup folder as administrator.'
-    Write-ToolLog ''
+    if ($after.Manual.Count -gt 0) {
+        Write-Screen ''
+        Write-Screen 'Still needs your attention:'
+        foreach ($m in $after.Manual) { Write-Screen ('  - ' + $m.Human) }
+    }
+
+    $needRestart = ($script:AppliedAreas.ContainsKey('B') -or $script:AppliedAreas.ContainsKey('C') -or $script:AppliedAreas.ContainsKey('D') -or $script:AppliedAreas.ContainsKey('E'))
+    Write-NextSteps $needRestart
+    Write-Screen ''
+    Write-Screen ('Backup, UNDO.cmd and the full log are in: ' + $backupDir)
+    Write-Screen 'To undo: run UNDO.cmd in that folder as administrator, or run this tool again and press U.'
     Write-ToolLog ('Finished: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
 
-    try { Start-Process explorer.exe -ArgumentList ('"' + $backupDir + '"') } catch {}
+    if ($needRestart -and $script:ApplyErrors -eq 0) {
+        Write-Host ''
+        $r = Read-Choice 'Restart Windows now? Press R to restart in 30 seconds (save your work first), or any other key to restart later:'
+        if ($r -eq 'R') {
+            $rc = Request-DelayedRestart 30
+            if ($rc -eq 0) { Write-Screen 'Windows will restart in 30 seconds. You can close this window.' 'Green' }
+            else { Write-Screen 'Windows did not accept the restart request. Please restart it yourself.' 'Yellow' }
+        }
+    }
+
     if ($remaining.Count -gt 0 -or $script:ApplyErrors -gt 0) { exit 2 }
     exit 0
 }
 catch {
     $msg = $_.Exception.Message
     Write-Host ''
-    Write-Host ('ERROR: ' + $msg) -ForegroundColor Red
+    Write-Host ('Something went wrong: ' + $msg) -ForegroundColor Red
     try { Write-ToolLog ('ERROR: ' + $msg + ' at ' + $_.InvocationInfo.PositionMessage) } catch {}
     exit 1
 }

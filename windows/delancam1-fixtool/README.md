@@ -44,26 +44,31 @@ installation and are never touched.
    shows a User Account Control prompt, because every repair is in `HKLM`.
    Accept it. If it is declined, the tool still runs the check and reports,
    but cannot repair anything.
-5. The tool checks the system and prints what it found and, item by item,
-   what it would change. Nothing has been changed at this point.
-6. To repair, type `APPLY` and press Enter. Press Enter alone to leave the
-   system as it is.
-7. After the repairs the tool checks everything again and prints whether the
-   system is now clean. It also says whether a restart is needed.
-8. Restart Windows with "Restart" (not "Shut down"; with Fast Startup on,
+5. The tool checks the PC (about 15 seconds, five steps shown on screen)
+   and then explains in plain words what it found and what it would repair.
+   Nothing has been changed at this point.
+6. To repair, press `Y`. Press `N` to leave the system as it is.
+7. After the repairs the tool checks everything again and says whether the
+   PC is now clean and what to do next.
+8. If the tool asks, press `R` to restart Windows in 30 seconds, or restart
+   yourself later with "Restart" (not "Shut down"; with Fast Startup on,
    "Shut down" keeps the old driver state). Then run the diagnostic tool once
    more and send the new report to Delanclip Support.
 
-Switches, for Delanclip Support and for people who prefer not to type
-`APPLY`:
+The screen shows only plain-language results. Every technical detail (registry
+paths, identifiers, probe frame counts, each backup and change) goes to the
+log file described under Output.
+
+Switches, for Delanclip Support:
 
 | Switch | Effect |
 | --- | --- |
-| `/apply` | Apply the repairs without asking for `APPLY` (the UAC prompt still appears) |
+| `/apply` | Repair without asking `Repair now?` (the UAC prompt still appears) |
+| `/undo` | Undo the most recent repair found on the Desktop, without checking first |
 | `/skipprobe` | Do not open the camera for the MJPG/NV12/YUY2 probe |
 
 Running the tool a second time on a repaired system changes nothing and
-reports `CLEAN`.
+reports that everything is in order.
 
 ## Undo
 
@@ -72,8 +77,15 @@ Before the first change, the tool creates
 it is about to change is exported there with `reg export` first. The folder
 also gets `UNDO.cmd`, a script that re-imports those exports and deletes the
 values the tool added, in reverse order, and `LOG.txt` with the full run.
-Running `UNDO.cmd` as administrator puts the registry back exactly as it was
-before the tool ran.
+
+There are two ways to undo, both one click:
+
+- run `UNDO.cmd` in that folder as administrator (right-click, "Run as
+  administrator"), or
+- run the tool again: when it finds an earlier repair on the Desktop it
+  offers `Press U to undo that repair` before checking anything.
+
+Either way the registry goes back exactly to the state before the repair.
 
 ## Privacy
 
@@ -95,7 +107,8 @@ The only writes it performs are the registry changes listed under Purpose, the
 `regsvr32 /s` re-registration of six Windows DirectShow components, stopping
 the Frame Server service (it restarts on demand) and, if it was disabled,
 setting that service's start type back to Manual. Every registry write is
-preceded by an export to the backup folder.
+preceded by an export to the backup folder. A restart of Windows happens only
+when the person presses `R` at the final question, with a 30-second delay.
 
 The log records: Windows build, whether the run was elevated, the local user
 name, the profile names of logged-on users (for the per-user consent and
@@ -107,9 +120,8 @@ restart state. It stays on the Desktop until the customer chooses to send it.
 
 Check mode writes one file to the Desktop:
 
-`DelanCam1-FixTool-check-YYYYMMDD-HHMMSS.txt`, the complete console output of
-the run: every check, every finding and the list of changes apply mode would
-make.
+`DelanCam1-FixTool-check-YYYYMMDD-HHMMSS.txt`: every check with its technical
+detail, every finding and the exact list of changes a repair would make.
 
 Apply mode creates a folder on the Desktop instead:
 
@@ -117,13 +129,16 @@ Apply mode creates a folder on the Desktop instead:
 
 | File | Contents |
 | --- | --- |
-| `LOG.txt` | Complete console output: check, planned changes, every backup and change made, the verification pass and the next steps |
+| `LOG.txt` | Everything shown on screen plus the technical detail: each check, planned changes, every backup and change made, the verification pass and the next steps |
 | `*.reg` | `reg export` of every registry key before it was changed; the name says which area and key |
 | `UNDO.cmd` | Restores the exported keys and removes the values the tool added; run as administrator |
 
 Exit codes: 0 when the system is clean or the repairs were applied and
 verified; 2 when findings remain (not applied, or a manual step is needed);
 1 when the tool itself failed.
+
+The tool prints its version in the window title and on the first line of the
+screen and log, the same way the diagnostic tool does.
 
 ## How it works
 
