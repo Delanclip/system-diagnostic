@@ -23,7 +23,7 @@ The tool checks and, in apply mode, repairs:
 | Area | What it checks | What apply mode does |
 | --- | --- | --- |
 | A | A vendor (NVIDIA, AMD, Intel) hardware MJPEG decoder registered in Media Foundation while the `HardwareMFT` switch leaves hardware decoders enabled; confirmed by a per-format probe that opens DelanCam1 in MJPG, NV12 and YUY2 | Sets `EnableDecoders = 0` under `HKLM\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT` and stops the Frame Server service so the change takes effect, then probes MJPG again |
-| B | The nine stock `vidc.*` entries in `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32` (64-bit) and the same key under `WOW6432Node` (32-bit) | Re-adds the missing entries, only when the codec DLL exists in `System32` or `SysWOW64`. Entries that point at an existing non-stock DLL are reported and left alone |
+| B | The nine stock `vidc.*` entries in `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32` (64-bit) and the same key under `WOW6432Node` (32-bit) | Re-adds the missing entries, only when the codec DLL exists in `System32` or `SysWOW64`. Entries that point at an existing non-stock DLL are reported and left alone. A legacy codec whose DLL is not shipped by that Windows version at all (Windows 11 has no 64-bit `iccvid.dll`) is logged, not flagged; only a missing `msyuv.dll` or `iyuv_32.dll` is reported as damage |
 | C | Entries in the DirectShow "Video Input Devices" and "DirectShow Filters" categories whose DLL no longer exists or which have no `InprocServer32` at all (ghost virtual cameras, dead codec-pack filters), plus the registration of the DirectShow core components | Deletes the dead `Instance` entry and its `CLSID` key, then clears every logged-on user's `ActiveMovie\devenum` cache and re-registers `quartz.dll`, `qcap.dll`, `qedit.dll`, `qdv.dll`, `devenum.dll` and `ksproxy.ax` with `regsvr32 /s` in both views. Virtual cameras whose DLL still exists are listed and never removed |
 | D | `HKLM\SOFTWARE\Microsoft\DirectShow\Preferred` (the MJPG entry must point at the Windows MJPEG Decompressor; other entries must point at decoders that exist), the `DoNotUse` list and `TreatAs` redirections on core filters, in both views | Restores the MJPG entry, deletes dangling `Preferred` values, clears `DoNotUse` values and removes `TreatAs` keys |
 | E | Camera privacy consent for the machine and each logged-on user, camera policies, the Windows Camera Frame Server service and Fast Startup | Only the Frame Server start type is repaired (Disabled back to Manual). Consent and policy problems are reported with the Settings path to fix them; the tool never changes privacy settings |
@@ -44,6 +44,12 @@ installation and are never touched.
    shows a User Account Control prompt, because every repair is in `HKLM`.
    Accept it. If it is declined, the tool still runs the check and reports,
    but cannot repair anything.
+   If Windows answers the double-click with "Smart App Control blocked a
+   file that may be unsafe", close that message, right-click the file and
+   choose "Run as administrator". Smart App Control blocks script files
+   downloaded from the internet before they start, so nothing inside the tool
+   can prevent that message; running as administrator is the documented way
+   around it.
 5. The tool checks the PC (about 15 seconds, five steps shown on screen)
    and then explains in plain words what it found and what it would repair.
    Nothing has been changed at this point.
@@ -54,6 +60,10 @@ installation and are never touched.
    yourself later with "Restart" (not "Shut down"; with Fast Startup on,
    "Shut down" keeps the old driver state). Then run the diagnostic tool once
    more and send the new report to Delanclip Support.
+
+Everything the tool writes lands in a `DELANCLIP` folder on the Desktop, and
+that folder opens in File Explorer when the tool finishes, so the results can
+be found on a cluttered Desktop and sent to support as a whole.
 
 The screen shows only plain-language results. Every technical detail (registry
 paths, identifiers, probe frame counts, each backup and change) goes to the
@@ -73,7 +83,8 @@ reports that everything is in order.
 ## Undo
 
 Before the first change, the tool creates
-`DelanCam1-FixTool-backup-YYYYMMDD-HHMMSS` on the Desktop. Every registry key
+`DelanCam1-FixTool-backup-YYYYMMDD-HHMMSS` inside the `DELANCLIP` folder on
+the Desktop. Every registry key
 it is about to change is exported there with `reg export` first. The folder
 also gets `UNDO.cmd`, a script that re-imports those exports and deletes the
 values the tool added, in reverse order, and `LOG.txt` with the full run.
@@ -86,6 +97,10 @@ There are two ways to undo, both one click:
   offers `Press U to undo that repair` before checking anything.
 
 Either way the registry goes back exactly to the state before the repair.
+After a successful undo the folder's `UNDO.cmd` is renamed to `UNDO-done.cmd`
+and an `UNDONE.txt` note is added, so the same backup is never offered twice.
+`UNDO.cmd` itself can be run more than once: a value that is already gone is
+skipped instead of counted as a failure.
 
 ## Privacy
 
@@ -118,12 +133,12 @@ restart state. It stays on the Desktop until the customer chooses to send it.
 
 ## Output
 
-Check mode writes one file to the Desktop:
+Check mode writes one file into the `DELANCLIP` folder on the Desktop:
 
 `DelanCam1-FixTool-check-YYYYMMDD-HHMMSS.txt`: every check with its technical
 detail, every finding and the exact list of changes a repair would make.
 
-Apply mode creates a folder on the Desktop instead:
+Apply mode creates a folder inside `DELANCLIP` instead:
 
 `DelanCam1-FixTool-backup-YYYYMMDD-HHMMSS`
 

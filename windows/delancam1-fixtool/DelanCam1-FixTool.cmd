@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "DELAN_VERSION=1.1.0"
+set "DELAN_VERSION=1.1.1"
 title Delanclip DelanCam1 Fix Tool v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 set "DELAN_MODE=check"
@@ -36,10 +36,14 @@ echo.
 echo How it works:
 echo  1. It checks your PC and tells you in plain words what it found.
 echo  2. Nothing is changed until you answer Y to "Repair now?".
-echo  3. Before any change, a backup folder with an UNDO script is created
-echo     on your Desktop, so everything can be put back with one click.
+echo  3. Before any change, a backup with an UNDO script is saved in the
+echo     DELANCLIP folder on your Desktop, so everything can be put back
+echo     with one click. That folder opens by itself when the tool finishes.
 echo.
 echo It deletes no files, installs nothing and never connects to the internet.
+echo.
+echo If Windows shows "Smart App Control blocked a file", close that message,
+echo right-click DelanCam1-FixTool.cmd and choose "Run as administrator".
 echo.
 echo Before you continue: keep DelanCam1 connected and close apps that use
 echo the camera (Windows Camera, OBS, Teams, Discord, OpenTrack, AITrack).
@@ -131,9 +135,13 @@ if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) {
     if (-not (Test-Path -LiteralPath $desktop)) { New-Item -ItemType Directory -Force -Path $desktop | Out-Null }
 }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+# Everything the tool writes goes into one folder on the Desktop, so it can be
+# found on a cluttered Desktop and sent to support as a whole.
+$outRoot = Join-Path $desktop 'DELANCLIP'
+if (-not (Test-Path -LiteralPath $outRoot)) { New-Item -ItemType Directory -Force -Path $outRoot | Out-Null }
 $backupPrefix = 'DelanCam1-FixTool-backup-'
-$backupDir = Join-Path $desktop ($backupPrefix + $stamp)
-$script:LogPath = Join-Path $desktop ("DelanCam1-FixTool-check-" + $stamp + ".txt")
+$backupDir = Join-Path $outRoot ($backupPrefix + $stamp)
+$script:LogPath = Join-Path $outRoot ("DelanCam1-FixTool-check-" + $stamp + ".txt")
 $script:LogLines = New-Object System.Collections.Generic.List[string]
 $script:Findings = New-Object System.Collections.Generic.List[object]
 $script:Undo = New-Object System.Collections.Generic.List[string]
@@ -176,6 +184,10 @@ $coreComponents = @(
     @{ N = 'SystemDeviceEnum'; File = 'devenum.dll'; C = '{62BE5D10-60EB-11d0-BD3B-00A0C911CE86}' }
 )
 $coreDlls = @('quartz.dll', 'qcap.dll', 'qedit.dll', 'qdv.dll', 'devenum.dll', 'ksproxy.ax')
+# Camera apps need msyuv.dll (YUY2/UYVY/YVYU) and iyuv_32.dll (I420/IYUV). The
+# other stock codecs (Cinepak, RLE, Video 1, YVU9) are legacy; Windows 11 no
+# longer ships a 64-bit iccvid.dll, so a missing legacy DLL is not damage.
+$criticalVfwDlls = @('msyuv.dll', 'iyuv_32.dll')
 
 # ------------------------------------------------------------------ logging
 
@@ -747,6 +759,7 @@ function Test-VfwCodecs {
         $planLines = @()
         $manual = @()
         $manualDlls = @()
+        $legacyAbsent = @()
         $nonStock = @()
         foreach ($entry in $expectedVfw.GetEnumerator()) {
             $name = $entry.Key
@@ -760,14 +773,17 @@ function Test-VfwCodecs {
                 $currentPath = Get-CleanPath $currentPath
                 if (Test-Path -LiteralPath $currentPath) { $nonStock += ($name + '=' + $current); continue }
                 if (Test-Path -LiteralPath $stockPath) { $toRestore += @{ Name = $name; Value = $stockDll; Was = $current }; $planLines += ($name + ' = ' + $stockDll + ' (currently ' + $current + ', file missing)') }
-                else { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')'); $manualDlls += $stockDll }
+                elseif ($criticalVfwDlls -contains $stockDll) { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')'); $manualDlls += $stockDll }
+                else { $legacyAbsent += ($name + ' (' + $stockDll + ' not shipped in this Windows)') }
             }
             else {
                 if (Test-Path -LiteralPath $stockPath) { $toRestore += @{ Name = $name; Value = $stockDll; Was = $null }; $planLines += ($name + ' = ' + $stockDll + ' (missing)') }
-                else { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')'); $manualDlls += $stockDll }
+                elseif ($criticalVfwDlls -contains $stockDll) { $manual += ($name + ' -> ' + $stockDll + ' (not found in ' + $view.SysDir + ')'); $manualDlls += $stockDll }
+                else { $legacyAbsent += ($name + ' (' + $stockDll + ' not shipped in this Windows)') }
             }
         }
         foreach ($line in $planLines) { Write-ToolLog ('    missing or broken: ' + $line) }
+        if ($legacyAbsent.Count -gt 0) { Write-ToolLog ('    legacy codec absent together with its DLL, not damage: ' + ($legacyAbsent -join ', ')) }
         if ($nonStock.Count -gt 0) { Add-Finding ('B-' + $view.Name) 'INFO' ('Non-stock but existing codec entries left as is: ' + ($nonStock -join ', ')) }
         if ($manual.Count -gt 0) {
             Add-Finding ('B-' + $view.Name) 'MANUAL' ('Codec DLL missing from Windows itself, cannot register it: ' + ($manual -join '; ') + '.') -Human ('A Windows system file is missing (' + (($manualDlls | Select-Object -Unique) -join ', ') + '). Open Command Prompt as administrator, run "sfc /scannow", wait for it to finish, then run this tool again.')
@@ -784,7 +800,7 @@ function Test-VfwCodecs {
             Add-Finding ('B-' + $view.Name) 'FIX' ('Restore ' + $toRestore.Count + ' stock VFW codec entr' + $(if ($toRestore.Count -eq 1) { 'y' } else { 'ies' }) + ' in the ' + $view.Name + ' Drivers32 list: ' + (($toRestore | ForEach-Object { $_.Name }) -join ', ') + '.') $plan $action @{ Key = $key; List = $toRestore; View = $view.Name } -Human $human -Fix ('Put the ' + $toRestore.Count + ' missing standard entr' + $(if ($toRestore.Count -eq 1) { 'y' } else { 'ies' }) + ' back (the codec files themselves are still in Windows).')
         }
         else {
-            Add-Finding ('B-' + $view.Name) 'INFO' ('All nine stock vidc.* entries are present in the ' + $view.Name + ' view.')
+            Add-Finding ('B-' + $view.Name) 'INFO' ('Every stock vidc.* entry whose DLL ships with this Windows is present in the ' + $view.Name + ' view.')
         }
     }
 }
@@ -1122,6 +1138,11 @@ function Write-UndoScript {
     [array]::Reverse($undo)
     foreach ($cmd in $undo) {
         if ($cmd -like 'rem *') { $lines.Add($cmd); continue }
+        if ($cmd -match '^reg delete "([^"]+)" /v "([^"]+)" /f$') {
+            # Deleting a value that is already gone is not a failure (the script may run twice).
+            $lines.Add('reg query "' + $Matches[1] + '" /v "' + $Matches[2] + '" >nul 2>&1 && (' + $cmd + ' >nul 2>&1 || set "FAILED=1")')
+            continue
+        }
         $lines.Add($cmd + ' >nul 2>&1 || set "FAILED=1"')
     }
     $lines.Add('net stop FrameServer >nul 2>&1')
@@ -1139,15 +1160,17 @@ function Write-UndoScript {
 }
 
 function Get-LatestBackup {
-    # The most recent backup folder on the Desktop that still has its UNDO.cmd.
-    try {
-        $dirs = @(Get-ChildItem -LiteralPath $desktop -Directory -Filter ($backupPrefix + '*') -ErrorAction Stop | Sort-Object Name -Descending)
-        foreach ($d in $dirs) {
-            $undo = Join-Path $d.FullName 'UNDO.cmd'
-            if (Test-Path -LiteralPath $undo) { return $d.FullName }
-        }
+    # The most recent backup folder (DELANCLIP folder first, then the Desktop
+    # itself for folders written by older versions) that still has an unused
+    # UNDO.cmd. A used one is renamed to UNDO-done.cmd and is never offered again.
+    $dirs = @()
+    foreach ($root in @($outRoot, $desktop)) {
+        try { $dirs += @(Get-ChildItem -LiteralPath $root -Directory -Filter ($backupPrefix + '*') -ErrorAction Stop) } catch {}
     }
-    catch {}
+    foreach ($d in ($dirs | Sort-Object Name -Descending)) {
+        $undo = Join-Path $d.FullName 'UNDO.cmd'
+        if (Test-Path -LiteralPath $undo) { return $d.FullName }
+    }
     return $null
 }
 
@@ -1158,6 +1181,12 @@ function Invoke-UndoFlow {
     Write-Screen ('Undoing the repair saved in: ' + $Folder)
     $code = Invoke-UndoScript $undoPath
     if ($code -eq 0) {
+        try {
+            Rename-Item -LiteralPath $undoPath -NewName 'UNDO-done.cmd' -Force -ErrorAction Stop
+            [System.IO.File]::WriteAllText((Join-Path $Folder 'UNDONE.txt'), ('This repair was undone on ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ". UNDO.cmd was renamed to UNDO-done.cmd so it is not offered again.`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+            Write-ToolLog ('  marked as undone: ' + $Folder)
+        }
+        catch { Write-ToolLog ('  could not mark the folder as undone: ' + $_.Exception.Message) }
         Write-Screen 'Done. Your previous Windows settings are back.' 'Green'
         Write-Screen 'Restart Windows (use Restart, not Shut down) to finish.'
     }
@@ -1165,6 +1194,11 @@ function Invoke-UndoFlow {
         Write-Screen 'Some steps could not be undone. Please send that folder to Delanclip Support.' 'Red'
     }
     return $code
+}
+
+function Open-OutputFolder {
+    # Shows the DELANCLIP folder so the results can be found on a cluttered Desktop.
+    try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $outRoot + '"') -ErrorAction Stop | Out-Null } catch {}
 }
 
 function Write-NextSteps {
@@ -1205,6 +1239,7 @@ try {
     if ($mode -eq 'undo') {
         if (-not $latestBackup) { Write-Screen 'No earlier repair by this tool was found on the Desktop, so there is nothing to undo.' 'Yellow'; exit 2 }
         $code = Invoke-UndoFlow $latestBackup
+        Open-OutputFolder
         if ($code -eq 0) { exit 0 } else { exit 2 }
     }
     if ($latestBackup -and $isAdmin -and $mode -eq 'check') {
@@ -1216,6 +1251,7 @@ try {
         $choice = Read-Choice 'Press U to undo that repair, or any other key to check the PC again:'
         if ($choice -eq 'U') {
             $code = Invoke-UndoFlow $latestBackup
+            Open-OutputFolder
             if ($code -eq 0) { exit 0 } else { exit 2 }
         }
     }
@@ -1235,6 +1271,7 @@ try {
             foreach ($m in $screen.Manual) { Write-Screen ('  - ' + $m.Human) }
             Write-Screen ''
             Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
+            Open-OutputFolder
             exit 2
         }
         Write-Screen 'RESULT: everything this tool checks is in order. Nothing to repair.' 'Green'
@@ -1243,6 +1280,7 @@ try {
         }
         Write-Screen 'If OpenTrack still cannot open DelanCam1, run the DelanCam1 Diagnostics tool and send its report to Delanclip Support.'
         Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
+        Open-OutputFolder
         exit 0
     }
 
@@ -1260,7 +1298,7 @@ try {
         foreach ($m in $screen.Manual) { Write-Screen ('  - ' + $m.Human) }
     }
     Write-Screen ''
-    Write-Screen 'Before any change, a backup folder with an UNDO script is created on your Desktop.'
+    Write-Screen 'Before any change, a backup with an UNDO script is saved in the DELANCLIP folder on your Desktop.'
     Write-Screen 'Running this tool again later also offers to undo the repair.'
     Write-Section 'CHANGES THE REPAIR WOULD MAKE (technical)'
     foreach ($f in $fixes) {
@@ -1273,6 +1311,7 @@ try {
             Write-Screen ''
             Write-Screen 'To repair, run the tool again and answer Yes when Windows asks for permission.' 'Yellow'
             Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
+            Open-OutputFolder
             exit 2
         }
         Write-Host ''
@@ -1281,6 +1320,7 @@ try {
             Write-Screen ''
             Write-Screen 'Nothing was changed. Run the tool again whenever you want to repair.' 'Yellow'
             Write-Screen ('The details of this check were saved to: ' + $script:LogPath)
+            Open-OutputFolder
             exit 2
         }
         $mode = 'apply'
@@ -1343,7 +1383,9 @@ try {
     Write-Screen ''
     Write-Screen ('Backup, UNDO.cmd and the full log are in: ' + $backupDir)
     Write-Screen 'To undo: run UNDO.cmd in that folder as administrator, or run this tool again and press U.'
+    Write-Screen 'If Delanclip Support asks for the results, send them the whole DELANCLIP folder from your Desktop.'
     Write-ToolLog ('Finished: ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+    Open-OutputFolder
 
     if ($needRestart -and $script:ApplyErrors -eq 0) {
         Write-Host ''
