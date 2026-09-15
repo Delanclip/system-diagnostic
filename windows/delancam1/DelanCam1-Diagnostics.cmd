@@ -1,10 +1,11 @@
 @echo off
 setlocal
-title Delanclip DelanCam1 Diagnostics
+set "DELAN_VERSION=1.4.1"
+title Delanclip DelanCam1 Diagnostics v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 
 echo ============================================================
-echo        Delanclip DelanCam1 Diagnostics
+echo        Delanclip DelanCam1 Diagnostics v%DELAN_VERSION%
 echo ============================================================
 echo.
 echo Keep DelanCam1 connected while this tool runs.
@@ -13,16 +14,19 @@ echo Close other apps that may use the camera first, such as Windows Camera,
 echo OBS, Teams, Discord or OpenTrack, so the stream test can open DelanCam1
 echo without another app already holding it.
 echo.
-echo This tool collects Windows camera, driver, USB, privacy,
-echo security-product, installed-program and running-application
-echo information, plus the Windows video-decoder registrations that camera
-echo software depends on. It also briefly opens DelanCam1 to test its video
-echo stream, but does NOT save any image or video data from the camera.
-echo It does NOT change drivers, install software, upload anything, or make
-echo network connections.
+echo What this tool will do:
+echo  - read Windows camera, driver and USB information
+echo  - briefly open DelanCam1 to test its video stream, without saving
+echo    any image or video
+echo  - change nothing on your PC, install nothing and make no network
+echo    connections
+echo  - show its progress below, step by step; a full run usually takes
+echo    one to two minutes
 echo.
 echo The report ZIP will be created on your Desktop with a name starting:
 echo SEND-TO-DELANCLIP-DelanCam1-Report-
+echo When it is ready, a File Explorer window opens by itself with the ZIP
+echo selected. What the report contains is described in README.txt.
 echo.
 pause
 
@@ -48,6 +52,7 @@ exit /b %RC%
 
 ### DELANCLIP_POWERSHELL ###
 $ErrorActionPreference = 'Stop'
+$script:toolVersion = if ($env:DELAN_VERSION) { $env:DELAN_VERSION } else { 'unknown' }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -68,10 +73,32 @@ function Record-Error {
     Add-Content -LiteralPath $errorsFile -Value $line -Encoding UTF8
 }
 
+$script:stepIndex = 0
+$script:stepTotal = 0
+try {
+    $scriptText = Get-Content -LiteralPath $env:DELAN_SCRIPT -Raw -ErrorAction Stop
+    $script:stepTotal = [regex]::Matches($scriptText, "(?m)^Run-Step '").Count
+    $scriptText = $null
+}
+catch {}
+if ($script:stepTotal -lt 1) { $script:stepTotal = 30 }
+
 function Run-Step {
     param([string]$Name, [scriptblock]$Action)
-    try { & $Action }
-    catch { Record-Error -Step $Name -Err $_ }
+    $script:stepIndex++
+    $label = "[{0,2}/{1}] {2}" -f $script:stepIndex, $script:stepTotal, $Name
+    $percent = [math]::Min(100, [int](($script:stepIndex - 1) * 100 / $script:stepTotal))
+    try { Write-Progress -Activity 'Delanclip DelanCam1 Diagnostics' -Status $label -PercentComplete $percent } catch {}
+    Write-Host ("{0,-52}" -f $label) -NoNewline
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $Action
+        Write-Host ("done ({0,4:N1} s)" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Green
+    }
+    catch {
+        Record-Error -Step $Name -Err $_
+        Write-Host ("failed ({0,4:N1} s), see errors.txt" -f $sw.Elapsed.TotalSeconds) -ForegroundColor Yellow
+    }
 }
 
 function Get-DevicePropertyData {
@@ -139,6 +166,7 @@ Run-Step 'README' {
 Delanclip DelanCam1 Diagnostics
 Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')
 Administrator: $isAdmin
+Tool version: $script:toolVersion
 
 Purpose:
 Collect Windows evidence that can explain DelanCam1 detection, driver, USB, privacy, security-software and application conflicts.
@@ -175,6 +203,16 @@ Collected:
   are common causes of camera failures
 - time since the last restart, Fast Startup and pending-reboot state
 - active power scheme and USB power-policy output when available
+- the camera's exposure and image-control values at the moment it was
+  opened (numbers only)
+- the USB path DelanCam1 is connected through: host controller, any hub in
+  between and the other USB devices sharing that controller
+- USB and Plug and Play warnings and errors from the System event log
+- kernel filter drivers attached to the camera device classes and to
+  DelanCam1, with file paths and signers
+- computer name, model, mainboard, a masked BIOS serial number and the
+  Windows installation date, so a report can be tied to the machine it
+  came from
 - a short diagnostic summary
 
 Not collected:
@@ -190,17 +228,45 @@ The tool does not change drivers, stop applications, alter privacy settings, ins
 "@ | Set-Content -LiteralPath (Join-Path $work 'README.txt') -Encoding UTF8
 }
 
+$script:machineLine = ''
+$script:machineFingerprint = ''
 Run-Step 'Windows information' {
     $os = Get-CimInstance Win32_OperatingSystem
     $cs = Get-CimInstance Win32_ComputerSystem
+    $board = $null
+    $bios = $null
+    try { $board = Get-CimInstance Win32_BaseBoard -ErrorAction Stop } catch {}
+    try { $bios = Get-CimInstance Win32_BIOS -ErrorAction Stop } catch {}
+    $serialRaw = ''
+    if ($bios -and $bios.SerialNumber) { $serialRaw = ([string]$bios.SerialNumber).Trim() }
+    $serialMasked = '(not reported)'
+    if ($serialRaw.Length -gt 6) { $serialMasked = $serialRaw.Substring(0, 2) + '...' + $serialRaw.Substring($serialRaw.Length - 4) }
+    elseif ($serialRaw.Length -gt 0) { $serialMasked = '...' + $serialRaw.Substring([math]::Max(0, $serialRaw.Length - 2)) }
+    $installDate = ''
+    try { $installDate = ([DateTime]$os.InstallDate).ToString('yyyy-MM-dd') } catch {}
+    $boardText = ''
+    if ($board) { $boardText = (([string]$board.Manufacturer).Trim() + ' ' + ([string]$board.Product).Trim()).Trim() }
+    $fpSource = "$env:COMPUTERNAME|$serialRaw|$installDate|$($cs.Manufacturer)|$($cs.Model)|$boardText"
+    try {
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $hash = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($fpSource))
+        $script:machineFingerprint = ([BitConverter]::ToString($hash) -replace '-', '').Substring(0, 8).ToLower()
+    }
+    catch { $script:machineFingerprint = 'n/a' }
+    $script:machineLine = "$env:COMPUTERNAME | $($cs.Manufacturer) $($cs.Model) | board $boardText | Windows $($os.Version) installed $installDate | fingerprint $script:machineFingerprint"
     [PSCustomObject]@{
         Caption = $os.Caption
         Version = $os.Version
         BuildNumber = $os.BuildNumber
         OSArchitecture = $os.OSArchitecture
+        InstallDate = $installDate
         LastBootUpTime = $os.LastBootUpTime
+        ComputerName = $env:COMPUTERNAME
         Manufacturer = $cs.Manufacturer
         Model = $cs.Model
+        BaseBoard = $boardText
+        BiosSerialMasked = $serialMasked
+        MachineFingerprint = $script:machineFingerprint
     } | Format-List | Out-String -Width 300 | Set-Content -LiteralPath (Join-Path $work 'windows.txt') -Encoding UTF8
 }
 
@@ -303,20 +369,121 @@ Run-Step 'DelanCam1 Device Manager status' {
     }
 }
 
+$script:usbHubsInPath = @()
+$script:usbControllerName = ''
+$script:usbSiblingCount = -1
+$script:usbSiblingNames = @()
+$script:usbSelectiveSuspendAc = $null
 Run-Step 'DelanCam1 USB path' {
     $path = Join-Path $work 'usb-path.txt'
+    $topoPath = Join-Path $work 'usb-topology.txt'
     if ($script:delanCams.Count -eq 0) {
         'No DelanCam1 device available for USB parent-chain collection.' | Set-Content -LiteralPath $path -Encoding UTF8
+        'No DelanCam1 device available for USB topology analysis.' | Set-Content -LiteralPath $topoPath -Encoding UTF8
+        return
     }
-    else {
-        foreach ($device in $script:delanCams) {
-            Add-Content -LiteralPath $path -Value ("===== " + $device.FriendlyName + " =====") -Encoding UTF8
-            Get-DeviceParentChain -InstanceId $device.InstanceId |
-                Add-Content -LiteralPath $path -Encoding UTF8
+    foreach ($device in $script:delanCams) {
+        Add-Content -LiteralPath $path -Value ("===== " + $device.FriendlyName + " =====") -Encoding UTF8
+        Get-DeviceParentChain -InstanceId $device.InstanceId |
+            Add-Content -LiteralPath $path -Encoding UTF8
+    }
+
+    $topo = New-Object System.Collections.Generic.List[string]
+    $topo.Add('DelanCam1 USB topology')
+    $topo.Add('')
+    $topo.Add('Which host controller DelanCam1 hangs off, whether a hub sits between the camera and the root hub, and which')
+    $topo.Add('other USB devices share that controller. Isochronous video (what a camera sends) has no retransmission, so')
+    $topo.Add('every extra hop and every busy neighbour matters more than it does for keyboards or storage.')
+    $topo.Add('')
+
+    $device = $script:delanCams[0]
+    $current = $device.InstanceId
+    $seen = @{}
+    $chain = @()
+    for ($depth = 0; $depth -lt 12; $depth++) {
+        if ([string]::IsNullOrWhiteSpace($current) -or $seen.ContainsKey($current)) { break }
+        $seen[$current] = $true
+        $dev = $null
+        try { $dev = Get-PnpDevice -InstanceId $current -ErrorAction Stop } catch {}
+        $loc = @(Get-DevicePropertyData -InstanceId $current -KeyName 'DEVPKEY_Device_LocationPaths')
+        $busDesc = Get-DevicePropertyData -InstanceId $current -KeyName 'DEVPKEY_Device_BusReportedDeviceDesc'
+        $name = ''
+        $class = ''
+        if ($dev) { $name = [string]$dev.FriendlyName; $class = [string]$dev.Class }
+        $chain += [PSCustomObject]@{ InstanceId = $current; Name = $name; Class = $class; BusDesc = [string]$busDesc; Location = [string]($loc | Select-Object -First 1) }
+        $parent = Get-DevicePropertyData -InstanceId $current -KeyName 'DEVPKEY_Device_Parent'
+        if ([string]::IsNullOrWhiteSpace([string]$parent)) { break }
+        $current = [string]$parent
+    }
+
+    $controller = $null
+    $hubs = @()
+    foreach ($node in $chain) {
+        if ($node.InstanceId -match '(?i)^USB\\ROOT_HUB') { continue }
+        if ($node.InstanceId -match '(?i)^USB\\VID_' -and $node.InstanceId -notmatch '(?i)VID_0120&PID_1234') { $hubs += $node; continue }
+        if ($node.InstanceId -match '(?i)^PCI\\' -and $null -eq $controller -and $node.Class -match '(?i)USB') { $controller = $node }
+    }
+    if (-not $controller) {
+        foreach ($node in $chain) { if ($node.InstanceId -match '(?i)^PCI\\') { $controller = $node; break } }
+    }
+
+    $topo.Add('Chain from the camera upwards:')
+    foreach ($node in $chain) {
+        $label = $node.Name
+        if ($node.BusDesc -and $node.BusDesc -ne $node.Name) { $label = "$label ($($node.BusDesc))" }
+        $topo.Add("  - $label  [$($node.InstanceId)]")
+    }
+    $topo.Add('')
+    if ($controller) {
+        $script:usbControllerName = $controller.Name
+        $topo.Add("Host controller: $($controller.Name)  [$($controller.InstanceId)]")
+    }
+    else { $topo.Add('Host controller: could not be identified from the parent chain.') }
+    if ($hubs.Count -gt 0) {
+        foreach ($h in $hubs) {
+            $hl = $h.Name
+            if ($h.BusDesc) { $hl = "$hl ($($h.BusDesc))" }
+            $script:usbHubsInPath += $hl
         }
+        $topo.Add('Hub(s) between DelanCam1 and the root hub: ' + ($script:usbHubsInPath -join '; '))
+        $topo.Add('Note: an external hub, a monitor hub or a front-panel header appears here, but so does the internal hub that')
+        $topo.Add('some motherboard chipsets (for example AMD chipset ports, ASMedia ASM107x) put behind their rear USB ports.')
+        $topo.Add('A CPU-connected rear port shows no hub on this list.')
     }
+    else { $topo.Add('Hub(s) between DelanCam1 and the root hub: none (the camera sits directly on a root hub port)') }
+    $topo.Add('')
+
+    if ($controller -and $controller.Location) {
+        $prefix = $controller.Location
+        $siblings = New-Object System.Collections.Generic.List[string]
+        $chainIds = @($chain | ForEach-Object { $_.InstanceId })
+        $candidates = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '(?i)^USB\\VID_' -and $_.InstanceId -notmatch '(?i)&MI_[0-9A-F][0-9A-F]' })
+        foreach ($cand in $candidates) {
+            if ($chainIds -contains $cand.InstanceId) { continue }
+            $cl = @(Get-DevicePropertyData -InstanceId $cand.InstanceId -KeyName 'DEVPKEY_Device_LocationPaths')
+            $first = [string]($cl | Select-Object -First 1)
+            if ($first -and $first.StartsWith($prefix + '#USBROOT', [System.StringComparison]::OrdinalIgnoreCase)) {
+                $idShort = $cand.InstanceId
+                if ($idShort -match '(?i)(VID_[0-9A-F]{4}&PID_[0-9A-F]{4})') { $idShort = $matches[1] }
+                $siblings.Add("$($cand.FriendlyName) [$idShort]")
+            }
+        }
+        $script:usbSiblingCount = $siblings.Count
+        $script:usbSiblingNames = @($siblings)
+        $topo.Add("Other USB devices on the same host controller: $($siblings.Count)")
+        foreach ($s in $siblings) { $topo.Add("  - $s") }
+    }
+    else { $topo.Add('Other USB devices on the same host controller: not determined (controller location unknown)') }
+    $topo | Set-Content -LiteralPath $topoPath -Encoding UTF8
 }
 
+$script:cameraControlsRead = $false
+$script:cameraControls = @()
+$script:exposureManual = $false
+$script:exposureNearMax = $false
+$script:exposureText = ''
+$script:exposureControlMs = -1
+$script:exposureControlAuto = $null
 $script:streamTestPerformed = $false
 $script:streamTestOpened = $false
 $script:streamTestFramesReceived = 0
@@ -425,6 +592,80 @@ Run-Step 'DelanCam1 stream test' {
         $settings.MemoryPreference = [Windows.Media.Capture.MediaCaptureMemoryPreference]::Cpu
         $settings.StreamingCaptureMode = [Windows.Media.Capture.StreamingCaptureMode]::Video
         Wait-WinRtAction ($mediaCapture.InitializeAsync($settings)) 8000
+
+        # Read the camera's image and exposure controls at the moment of opening. Only numbers are kept.
+        try {
+            $vdc = $mediaCapture.VideoDeviceController
+            $ctrlLines = New-Object System.Collections.Generic.List[string]
+            $ctrlLines.Add('Delanclip DelanCam1 Camera Controls')
+            $ctrlLines.Add("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
+            $ctrlLines.Add('')
+            $ctrlLines.Add('Image and exposure controls as Windows reported them when the camera was opened for the stream test.')
+            $ctrlLines.Add('Drivers keep these values between sessions. A manual exposure near its maximum can by itself cut the')
+            $ctrlLines.Add('frame rate to about 1 FPS and wash the picture out, which looks exactly like a USB or hardware fault.')
+            $ctrlLines.Add('Legacy Exposure values follow the UVC convention: log2 of the exposure time in seconds (-6 is 1/64 s, 0 is 1 s).')
+            $ctrlLines.Add('')
+            $ctrlLines.Add(('{0,-22} {1,-9} {2,-6} {3,-9} {4,-9} {5,-8} {6,-8} {7}' -f 'Control', 'Supported', 'Auto', 'Value', 'Default', 'Min', 'Max', 'Step'))
+            foreach ($ctrlName in @('Exposure', 'Brightness', 'Contrast', 'WhiteBalance', 'BacklightCompensation', 'Hue', 'Focus', 'Zoom', 'Pan', 'Tilt', 'Roll')) {
+                try {
+                    $ctrl = $vdc.$ctrlName
+                    if ($null -eq $ctrl) { $ctrlLines.Add(('{0,-22} {1}' -f $ctrlName, 'not exposed')); continue }
+                    $cap = $ctrl.Capabilities
+                    $supported = $false
+                    if ($cap) { $supported = [bool]$cap.Supported }
+                    if (-not $supported) { $ctrlLines.Add(('{0,-22} {1,-9}' -f $ctrlName, 'False')); continue }
+                    $val = [double]0
+                    $gotVal = $false
+                    try { $gotVal = [bool]$ctrl.TryGetValue([ref]$val) } catch { $gotVal = $false }
+                    $autoText = 'n/a'
+                    $autoOn = $null
+                    if ($cap.AutoModeSupported) {
+                        $auto = $false
+                        $gotAuto = $false
+                        try { $gotAuto = [bool]$ctrl.TryGetAuto([ref]$auto) } catch { $gotAuto = $false }
+                        if ($gotAuto) { $autoOn = [bool]$auto; $autoText = [string]$autoOn } else { $autoText = '?' }
+                    }
+                    $valText = '?'
+                    if ($gotVal) { $valText = [string]$val }
+                    $ctrlLines.Add(('{0,-22} {1,-9} {2,-6} {3,-9} {4,-9} {5,-8} {6,-8} {7}' -f $ctrlName, 'True', $autoText, $valText, $cap.Default, $cap.Min, $cap.Max, $cap.Step))
+                    $script:cameraControls += [PSCustomObject]@{ Name = $ctrlName; Value = $val; GotValue = $gotVal; Auto = $autoOn; Min = [double]$cap.Min; Max = [double]$cap.Max; Step = [double]$cap.Step; Default = [double]$cap.Default }
+                    if ($ctrlName -eq 'Exposure' -and $gotVal) {
+                        $script:exposureText = "value $val, auto $autoText, range $($cap.Min) to $($cap.Max), default $($cap.Default)"
+                        if ($autoOn -eq $false) {
+                            $script:exposureManual = $true
+                            $stepSize = [double]$cap.Step
+                            if ($stepSize -le 0) { $stepSize = 1 }
+                            if ($val -ge ([double]$cap.Max - $stepSize)) { $script:exposureNearMax = $true }
+                        }
+                    }
+                }
+                catch { $ctrlLines.Add(('{0,-22} error: {1}' -f $ctrlName, $_.Exception.Message)) }
+            }
+            $ctrlLines.Add('')
+            try {
+                $ec = $vdc.ExposureControl
+                if ($ec -and $ec.Supported) {
+                    $ecMs = [math]::Round(([TimeSpan]$ec.Value).TotalMilliseconds, 2)
+                    $ecMin = [math]::Round(([TimeSpan]$ec.Min).TotalMilliseconds, 2)
+                    $ecMax = [math]::Round(([TimeSpan]$ec.Max).TotalMilliseconds, 2)
+                    $script:exposureControlMs = $ecMs
+                    $script:exposureControlAuto = [bool]$ec.Auto
+                    $ctrlLines.Add("ExposureControl: supported, auto $($ec.Auto), exposure time $ecMs ms (range $ecMin to $ecMax ms)")
+                }
+                else { $ctrlLines.Add('ExposureControl: not supported by this driver (the legacy Exposure row above applies)') }
+            }
+            catch { $ctrlLines.Add("ExposureControl: error: $($_.Exception.Message)") }
+            try {
+                [Windows.Media.Capture.PowerlineFrequency,Windows.Media.Capture,ContentType=WindowsRuntime] | Out-Null
+                $plf = [Windows.Media.Capture.PowerlineFrequency]::Disabled
+                $gotPlf = [bool]$vdc.TryGetPowerlineFrequency([ref]$plf)
+                if ($gotPlf) { $ctrlLines.Add("Powerline frequency (anti-flicker): $plf") } else { $ctrlLines.Add('Powerline frequency (anti-flicker): not reported') }
+            }
+            catch { $ctrlLines.Add("Powerline frequency: error: $($_.Exception.Message)") }
+            $script:cameraControlsRead = $true
+            $ctrlLines | Set-Content -LiteralPath (Join-Path $work 'camera-controls.txt') -Encoding UTF8
+        }
+        catch { Record-Error -Step 'DelanCam1 camera controls' -Err $_ }
 
         $sourceInfos = @($group.SourceInfos)
         $lines.Add("Frame sources exposed by MediaFrameSourceGroup: $($sourceInfos.Count)")
@@ -1483,7 +1724,12 @@ Run-Step 'Camera event logs' {
                         Add-Content -LiteralPath $path -Encoding UTF8
                 }
             }
-            catch { Record-Error -Step ("Camera event log " + $log.LogName) -Err $_ }
+            catch {
+                if ($_.Exception.Message -match '(?i)No events were found') {
+                    Add-Content -LiteralPath $path -Value 'No events in the previous 7 days.' -Encoding UTF8
+                }
+                else { Record-Error -Step ("Camera event log " + $log.LogName) -Err $_ }
+            }
             Add-Content -LiteralPath $path -Value '' -Encoding UTF8
         }
     }
@@ -1518,7 +1764,18 @@ Run-Step 'USB power policy' {
     (& $powercfg /getactivescheme 2>&1) | Out-String -Width 500 | Add-Content -LiteralPath $path -Encoding UTF8
     "" | Add-Content -LiteralPath $path -Encoding UTF8
     "===== USB power settings =====" | Add-Content -LiteralPath $path -Encoding UTF8
-    (& $powercfg /query SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 2>&1) | Out-String -Width 500 | Add-Content -LiteralPath $path -Encoding UTF8
+    $usbOut = @(& $powercfg /query SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 2>&1 | ForEach-Object { [string]$_ })
+    ($usbOut -join "`r`n") | Add-Content -LiteralPath $path -Encoding UTF8
+    $settingIdx = -1
+    for ($i = 0; $i -lt $usbOut.Count; $i++) { if ($usbOut[$i] -match '(?i)48e6b7a6-50f5-4782-a5d4-53bb8f07e226') { $settingIdx = $i; break } }
+    if ($settingIdx -ge 0) {
+        $indexValues = @()
+        for ($i = $settingIdx + 1; $i -lt $usbOut.Count; $i++) {
+            if ($usbOut[$i] -match '(?i):\s*0x([0-9a-f]{8})\s*$') { $indexValues += [Convert]::ToInt32($matches[1], 16) }
+            if ($indexValues.Count -ge 2) { break }
+        }
+        if ($indexValues.Count -ge 1) { $script:usbSelectiveSuspendAc = $indexValues[0] }
+    }
 }
 
 Run-Step 'Recent matching PnP events' {
@@ -1566,6 +1823,143 @@ Run-Step 'Recent matching PnP events' {
                 Set-Content -LiteralPath $path -Encoding UTF8
         }
     }
+}
+
+$script:usbEventErrors = 0
+$script:usbEventCameraHits = 0
+$script:usbEventTop = @()
+Run-Step 'USB and PnP event log' {
+    $path = Join-Path $work 'usb-events.txt'
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('USB and Plug and Play events from the Windows System log, last 14 days. Only event metadata and message text')
+    $out.Add('are listed. Level: 1 critical, 2 error, 3 warning, 4 information.')
+    $out.Add('')
+    $start = (Get-Date).AddDays(-14)
+    $providers = @('Microsoft-Windows-USB-USBHUB3', 'Microsoft-Windows-USB-USBXHCI', 'Microsoft-Windows-USB-USBHUB', 'Microsoft-Windows-USB-USBPORT', 'Microsoft-Windows-Kernel-PnP', 'Microsoft-Windows-DriverFrameworks-UserMode', 'Microsoft-Windows-Kernel-Power')
+    $events = @()
+    try { $events = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = $providers; StartTime = $start } -ErrorAction Stop) }
+    catch { $events = @(); $out.Add("Get-WinEvent reported: $($_.Exception.Message)") }
+    $rows = @(foreach ($e in $events) {
+        $msg = ''
+        try { $msg = [string]$e.Message } catch {}
+        if ([string]::IsNullOrWhiteSpace($msg)) { try { $msg = (($e.Properties | ForEach-Object { [string]$_.Value }) -join ' ') } catch {} }
+        [PSCustomObject]@{ Time = $e.TimeCreated; Id = [int]$e.Id; Level = [int]$e.Level; Provider = ([string]$e.ProviderName -replace '^Microsoft-Windows-', ''); Text = (($msg -replace '\s+', ' ').Trim()) }
+    })
+    $powerIds = @(41, 42, 107, 109, 187)
+    $rows = @($rows | Where-Object { $_.Provider -ne 'Kernel-Power' -or ($powerIds -contains $_.Id) })
+    $out.Add("Events collected: $($rows.Count)")
+    $out.Add('')
+    $out.Add('--- Counts by provider, event ID and level ---')
+    $groups = @($rows | Group-Object Provider, Id, Level | Sort-Object Count -Descending)
+    foreach ($g in $groups) { $out.Add(('{0,6}  {1}' -f $g.Count, $g.Name)) }
+    $script:usbEventTop = @($groups | Select-Object -First 5 | ForEach-Object { "$($_.Name) x$($_.Count)" })
+    $bad = @($rows | Where-Object { $_.Level -ge 1 -and $_.Level -le 3 })
+    $cameraHits = @($bad | Where-Object { $_.Text -match '(?i)VID_0120|DelanCam' })
+    $script:usbEventErrors = $bad.Count
+    $script:usbEventCameraHits = $cameraHits.Count
+    $out.Add('')
+    $out.Add("--- Warnings and errors naming DelanCam1: $($cameraHits.Count) ---")
+    foreach ($r in ($cameraHits | Select-Object -First 40)) { $out.Add(('{0:yyyy-MM-dd HH:mm:ss}  {1,-28} {2,5} L{3}  {4}' -f $r.Time, $r.Provider, $r.Id, $r.Level, $r.Text)) }
+    $out.Add('')
+    $out.Add("--- Most recent warnings and errors, any USB device: $($bad.Count) total, newest 60 listed ---")
+    foreach ($r in ($bad | Sort-Object Time -Descending | Select-Object -First 60)) {
+        $t = [string]$r.Text
+        if ($t.Length -gt 300) { $t = $t.Substring(0, 300) + '...' }
+        $out.Add(('{0:yyyy-MM-dd HH:mm:ss}  {1,-28} {2,5} L{3}  {4}' -f $r.Time, $r.Provider, $r.Id, $r.Level, $t))
+    }
+    $out | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+$script:classFilterFindings = @()
+Run-Step 'Driver stack and class filters' {
+    $path = Join-Path $work 'driver-stack.txt'
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Kernel filter drivers attached to the camera device classes and to DelanCam1, plus the driver stack Windows')
+    $lines.Add('loaded for the camera. Everything listed here sits between the USB camera and the Windows camera APIs; a')
+    $lines.Add('third-party filter (webcam effects, virtual cameras, security suites, some overlay tools) can stop or corrupt')
+    $lines.Add('frames for every application at once. Only driver names, file paths and signers are listed.')
+    $lines.Add('')
+
+    function Get-DriverFileInfo {
+        param([string]$ServiceName)
+        $inbox = '(?i)^(usbvideo|usbccgp|ksthunk|WdmCompanionFilter|ks|swenum|usbhub3|USBXHCI|UCX01000|usbhub|usbport|usbehci|WUDFRd|Wdf01000|hidusb|usbaudio|stream|vhf|mshidkmdf)$'
+        $svcKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\' + $ServiceName
+        $img = $null
+        try { $img = (Get-ItemProperty -LiteralPath $svcKey -ErrorAction Stop).ImagePath } catch {}
+        $file = ''
+        if ($img) {
+            $file = ([string]$img).Trim().Trim('"')
+            $file = $file -replace '^\\\?\?\\', ''
+            $file = $file -replace '(?i)^\\SystemRoot\\', ($env:windir + '\')
+            $file = $file -replace '(?i)^SystemRoot\\', ($env:windir + '\')
+            $file = $file -replace '(?i)^system32\\', ($env:windir + '\System32\')
+            $file = [Environment]::ExpandEnvironmentVariables($file)
+            if ($file -notmatch '^[a-zA-Z]:\\') { $file = Join-Path $env:windir $file }
+        }
+        elseif ($ServiceName -match $inbox) { $file = Join-Path $env:windir ('System32\drivers\' + $ServiceName + '.sys') }
+        if (-not $file) { return @{ File = ''; Signer = ''; State = 'no service entry' } }
+        if (-not (Test-Path -LiteralPath $file)) { return @{ File = $file; Signer = ''; State = 'FILE MISSING' } }
+        $signer = ''
+        try {
+            $sig = Get-AuthenticodeSignature -FilePath $file -ErrorAction Stop
+            if ($sig.SignerCertificate) { $signer = ([string]$sig.SignerCertificate.Subject -replace '^CN=([^,]+).*$', '$1') }
+            else { $signer = "unsigned ($($sig.Status))" }
+        }
+        catch { $signer = 'signature check failed' }
+        $inWindows = ($file -match '(?i)^[a-z]:\\Windows\\System32\\drivers\\')
+        $state = 'third-party'
+        if ($signer -match '(?i)^Microsoft Windows( Publisher)?$|^Microsoft Corporation$' -and $inWindows) { $state = 'Windows' }
+        elseif ($ServiceName -match $inbox -and $inWindows) { $state = 'Windows' }
+        elseif ($signer -match '(?i)Hardware Compatibility Publisher') { $state = 'vendor (WHQL)' }
+        return @{ File = $file; Signer = $signer; State = $state }
+    }
+
+    $classes = @(
+        @{ Name = 'Camera class'; Guid = '{ca3e7ab9-b4c3-4ae6-8251-579ef933890f}' },
+        @{ Name = 'Image class'; Guid = '{6bdd1fc6-810f-11d0-bec7-08002be2092f}' },
+        @{ Name = 'USB class'; Guid = '{36fc9e60-c465-11cf-8056-444553540000}' },
+        @{ Name = 'Media class'; Guid = '{4d36e96c-e325-11ce-bfc1-08002be10318}' }
+    )
+    foreach ($c in $classes) {
+        $lines.Add("===== $($c.Name) $($c.Guid) =====")
+        $p = Get-ItemProperty -LiteralPath ('HKLM:\SYSTEM\CurrentControlSet\Control\Class\' + $c.Guid) -ErrorAction SilentlyContinue
+        foreach ($kind in @('UpperFilters', 'LowerFilters')) {
+            $vals = @()
+            if ($p -and $null -ne $p.$kind) { $vals = @($p.$kind | Where-Object { $_ }) }
+            if ($vals.Count -eq 0) { $lines.Add("$kind : (none)"); continue }
+            foreach ($f in $vals) {
+                $info = Get-DriverFileInfo ([string]$f)
+                $lines.Add(('{0,-12} : {1,-24} {2,-16} {3,-40} {4}' -f $kind, $f, $info.State, $info.Signer, $info.File))
+                if ($info.State -ne 'Windows') { $script:classFilterFindings += "$f ($($c.Name) $kind, $($info.State), $($info.Signer))" }
+            }
+        }
+        $lines.Add('')
+    }
+    foreach ($device in $script:delanCams) {
+        $lines.Add("===== DelanCam1 device $($device.InstanceId) =====")
+        $stack = @(Get-DevicePropertyData -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_Stack')
+        $stack = @($stack | Where-Object { $_ })
+        $lines.Add('Driver stack (top to bottom): ' + ($stack -join ' > '))
+        foreach ($kind in @('DEVPKEY_Device_UpperFilters', 'DEVPKEY_Device_LowerFilters')) {
+            $vals = @(Get-DevicePropertyData -InstanceId $device.InstanceId -KeyName $kind)
+            $vals = @($vals | Where-Object { $_ })
+            $label = $kind -replace '^DEVPKEY_Device_', 'Device '
+            if ($vals.Count -eq 0) { $lines.Add("$label : (none)"); continue }
+            foreach ($f in $vals) {
+                $info = Get-DriverFileInfo ([string]$f)
+                $lines.Add(('{0,-20} : {1,-24} {2,-16} {3,-40} {4}' -f $label, $f, $info.State, $info.Signer, $info.File))
+                if ($info.State -ne 'Windows') { $script:classFilterFindings += "$f (DelanCam1 $label, $($info.State), $($info.Signer))" }
+            }
+        }
+        foreach ($drv in $stack) {
+            $n = ([string]$drv) -replace '^\\Driver\\', ''
+            $info = Get-DriverFileInfo $n
+            $lines.Add(('{0,-20} : {1,-24} {2,-16} {3,-40} {4}' -f 'Stack driver', $n, $info.State, $info.Signer, $info.File))
+            if ($info.State -ne 'Windows' -and $info.State -ne 'no service entry') { $script:classFilterFindings += "$n (DelanCam1 driver stack, $($info.State), $($info.Signer))" }
+        }
+        $lines.Add('')
+    }
+    $lines | Set-Content -LiteralPath $path -Encoding UTF8
 }
 
 Run-Step 'Matching SetupAPI excerpts' {
@@ -1619,6 +2013,11 @@ Run-Step 'Diagnostic summary' {
     $summary = New-Object System.Collections.Generic.List[string]
     $summary.Add('Delanclip DelanCam1 Diagnostics - Summary')
     $summary.Add("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
+    $summary.Add("Tool version: $script:toolVersion")
+    if ($script:machineLine) {
+        $summary.Add("Machine: $script:machineLine")
+        $summary.Add('The machine line identifies the computer this report came from. A second-computer test must show a different machine here.')
+    }
     $summary.Add('')
 
     if ($script:delanCams.Count -eq 0) {
@@ -1688,7 +2087,12 @@ Run-Step 'Diagnostic summary' {
             }
         }
         elseif ($script:streamTestFramesReceived -lt 5) {
-            $summary.Add("REVIEW HIGH: The stream delivered only $script:streamTestFramesReceived frame(s) in the capture window (first frame after $script:streamTestFirstFrameDelayMs ms). Too few to measure a working video feed. This usually points to USB, driver or hardware; extreme low light can also slow frame delivery this much on an IR camera, so check the sampled brightness below before ruling that out.")
+            if ($script:streamTestFramesReceived -le 2 -and $script:streamTestStoppedEarly) {
+                $summary.Add("REVIEW HIGH: The stream delivered $script:streamTestFramesReceived frame(s) right after start (first after $script:streamTestFirstFrameDelayMs ms) and then nothing for the rest of the capture window, with no Windows error. This pattern lives below Windows Camera and OpenTrack: the USB isochronous link, the cable or the camera itself. Check CAMERA CONTROLS next (a manual long exposure looks the same), then USB TOPOLOGY. The same result from this tool on a second computer points at the camera and its cable; a clean result there points at this PC's USB path.")
+            }
+            else {
+                $summary.Add("REVIEW HIGH: The stream delivered only $script:streamTestFramesReceived frame(s) in the capture window (first frame after $script:streamTestFirstFrameDelayMs ms). Too few to measure a working video feed. This usually points to USB, driver or hardware; extreme low light can also slow frame delivery this much on an IR camera, so check the sampled brightness below before ruling that out.")
+            }
         }
         elseif ($script:streamTestStreamStalls -gt 0 -and $script:streamTestGapPattern -eq 'uniform-slow') {
             $summary.Add('INFO: Frames arrived slower than the nominal FPS but with uniform spacing - consistent with auto-exposure in a scene that appears dark to this IR tracking camera, not with a transport fault. See stream-test.txt.')
@@ -1719,6 +2123,23 @@ Run-Step 'Diagnostic summary' {
         if ($script:streamTestStoppedEarly) {
             $summary.Add('REVIEW: The stream stopped delivering frames well before the end of the capture window. Webcam-protection features in security software can cut camera streams mid-use; USB or driver faults can too. Compare with the security products listed below.')
         }
+        if ($script:cameraControlsRead) {
+            if ($script:exposureControlMs -ge 100 -and $script:exposureControlAuto -eq $false) {
+                $summary.Add("REVIEW HIGH: CAMERA CONTROLS: exposure is manual with an exposure time of $script:exposureControlMs ms. That alone limits the camera to about $([math]::Round(1000 / $script:exposureControlMs, 1)) FPS and washes the picture out. Restore automatic exposure (Default in the camera properties dialog opened from OpenTrack) before suspecting USB or hardware. See camera-controls.txt.")
+            }
+            elseif ($script:exposureControlMs -ge 100) {
+                $summary.Add("INFO: CAMERA CONTROLS: automatic exposure has stretched the exposure time to $script:exposureControlMs ms, which caps the frame rate at about $([math]::Round(1000 / $script:exposureControlMs, 1)) FPS. The scene looks dark to this IR camera; more IR light in view fixes that, not Windows. See camera-controls.txt.")
+            }
+            elseif ($script:exposureManual -and $script:exposureNearMax) {
+                $summary.Add("REVIEW HIGH: CAMERA CONTROLS: exposure is in manual mode at or near its maximum ($script:exposureText). A long manual exposure caps the frame rate at a few FPS and washes the picture out, which looks exactly like a USB or hardware fault. Restore automatic exposure (Default in the camera properties dialog opened from OpenTrack) and re-test. See camera-controls.txt.")
+            }
+            elseif ($script:exposureManual) {
+                $summary.Add("INFO: CAMERA CONTROLS: exposure is in manual mode ($script:exposureText). Fine for tracking when set deliberately; compare with the frame rate above. See camera-controls.txt.")
+            }
+            else {
+                $summary.Add('CAMERA CONTROLS: exposure reported in automatic mode. See camera-controls.txt for the full list.')
+            }
+        }
         $summary.Add('Content analysis flags frozen/identical frames but cannot judge whether a varying image looks correct. See stream-test.txt for full detail.')
     }
 
@@ -1741,6 +2162,27 @@ Run-Step 'Diagnostic summary' {
         }
         else {
             $summary.Add('MJPEG delivered frames but the raw formats did not. Unusual; see format-probe.txt.')
+        }
+    }
+
+    $summary.Add('')
+    $summary.Add('USB TOPOLOGY')
+    if ($script:delanCams.Count -eq 0) { $summary.Add('Not analysed: DelanCam1 is not present.') }
+    else {
+        if ($script:usbControllerName) { $summary.Add("Host controller: $script:usbControllerName.") }
+        if ($script:usbHubsInPath.Count -gt 0) {
+            $summary.Add('INFO: DelanCam1 is connected behind a USB hub: ' + ($script:usbHubsInPath -join '; ') + '. Isochronous video tolerates extra hops badly. External hubs, monitor hubs and front-panel headers show up here, and so does the internal hub behind the chipset ports of some AMD boards (ASMedia ASM107x). Compare with a rear port that shows no hub, ideally one wired to the CPU. See usb-topology.txt.')
+        }
+        else { $summary.Add('DelanCam1 sits directly on a root hub port (no hub in between).') }
+        if ($script:usbSiblingCount -ge 0) {
+            $siblingLine = "Other USB devices on the same host controller: $script:usbSiblingCount"
+            if ($script:usbSiblingCount -gt 0) { $siblingLine += ' (' + (($script:usbSiblingNames | Select-Object -First 6) -join '; ') + ')' }
+            $summary.Add($siblingLine + '.')
+            if ($script:usbSiblingCount -ge 8) { $summary.Add('INFO: Many devices share this controller. Unplugging everything except keyboard, mouse and DelanCam1 for one test is worth the minute it takes.') }
+        }
+        if ($null -ne $script:usbSelectiveSuspendAc) {
+            if ($script:usbSelectiveSuspendAc -eq 0) { $summary.Add('USB selective suspend (mains power): disabled.') }
+            else { $summary.Add('INFO: USB selective suspend (mains power) is enabled. Windows may suspend an idle camera and some cameras do not resume cleanly; disabling it in the power plan is a harmless test.') }
         }
     }
 
@@ -1791,6 +2233,10 @@ Run-Step 'Diagnostic summary' {
     if ($script:vfwMissing32.Count -gt 0) {
         $pipelineFindings++
         $summary.Add('REVIEW: 32-bit VFW codec registrations missing from Drivers32: ' + ($script:vfwMissing32 -join ', ') + '.')
+    }
+    if ($script:classFilterFindings.Count -gt 0) {
+        $pipelineFindings++
+        $summary.Add('REVIEW HIGH: Non-Microsoft filter driver(s) attached to the camera classes or to DelanCam1: ' + (($script:classFilterFindings | Select-Object -Unique) -join '; ') + '. A third-party kernel filter in the camera path affects every application at once, Windows Camera included. See driver-stack.txt.')
     }
     if ($pipelineFindings -eq 0) {
         $summary.Add('Media Foundation decoders, DirectShow registrations and VFW codecs look stock. See media-foundation.txt and directshow.txt.')
@@ -1889,6 +2335,12 @@ Run-Step 'Diagnostic summary' {
     if ($script:cameraEventCount -gt 0) {
         $summary.Add("INFO: Collected $script:cameraEventCount event(s) from enabled camera-related Windows event logs.")
     }
+    if ($script:usbEventCameraHits -gt 0) {
+        $summary.Add("REVIEW: $script:usbEventCameraHits USB/PnP warning or error event(s) in the last 14 days name DelanCam1 (resets, failed requests, surprise removals). See usb-events.txt.")
+    }
+    elseif ($script:usbEventErrors -gt 0) {
+        $summary.Add("INFO: $script:usbEventErrors USB/PnP warning or error event(s) in the last 14 days, none naming DelanCam1. See usb-events.txt.")
+    }
     if ($script:uptimeDays -ge 7) {
         $summary.Add("INFO: $script:uptimeDays day(s) since the last full restart (Fast Startup = $script:fastStartup). Ask for Restart, not Shut down, before drawing conclusions from driver behaviour.")
     }
@@ -1898,7 +2350,7 @@ Run-Step 'Diagnostic summary' {
 
     $summary.Add('')
     $summary.Add('LIMITATION')
-    $summary.Add('This version opens DelanCam1, measures whether its video stream delivers frames at a steady rate, checksums frames in memory to detect a frozen stream, probes MJPG, NV12 and YUY2 separately, and inspects the Windows video-pipeline registrations (Media Foundation decoders, DirectShow filters, VFW codecs) and the installed-program list.')
+    $summary.Add('This version opens DelanCam1, measures whether its video stream delivers frames at a steady rate, checksums frames in memory to detect a frozen stream, reads the camera exposure and image controls, probes MJPG, NV12 and YUY2 separately, maps the USB path (hub, host controller, neighbouring devices), collects USB and PnP events, lists kernel filter drivers in the camera path, inspects the Windows video-pipeline registrations (Media Foundation decoders, DirectShow filters, VFW codecs) and the installed-program list, and identifies the machine the report came from.')
     $summary.Add('Content analysis cannot judge whether a varying image is visually correct, and registry findings are review flags for Delanclip Support, not proof of the cause.')
     $summary | Set-Content -LiteralPath (Join-Path $work 'SUMMARY.txt') -Encoding UTF8
 }
@@ -1915,9 +2367,11 @@ if (-not (Test-Path -LiteralPath $zipPath)) {
 
 try { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 
+try { Write-Progress -Activity 'Delanclip DelanCam1 Diagnostics' -Completed } catch {}
 Write-Host ''
 Write-Host 'Diagnostic package created:' -ForegroundColor Green
 Write-Host $zipPath -ForegroundColor Cyan
+Write-Host 'A File Explorer window with the ZIP selected is opening now.'
 Write-Host ''
 
 try { Start-Process explorer.exe -ArgumentList "/select,`"$zipPath`"" } catch {}
