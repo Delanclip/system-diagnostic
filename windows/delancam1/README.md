@@ -12,6 +12,10 @@ Use this tool when screenshots are no longer enough to explain a DelanCam1
 problem. It checks several layers that can affect a USB camera:
 
 - DelanCam1 detection, PnP status, driver, INF and USB parent path;
+- the USB topology behind the camera: host controller, any hub between the
+  camera and the root hub, and the other USB devices sharing that controller;
+- kernel filter drivers attached to the camera device classes and to DelanCam1,
+  with file paths and signers;
 - other Windows devices currently reporting PnP errors;
 - registered antivirus products and selected Microsoft Defender status;
 - Windows camera privacy consent and camera-access policy values;
@@ -19,13 +23,15 @@ problem. It checks several layers that can affect a USB camera:
 - camera-related Windows services;
 - recent camera-access records exposed by Windows;
 - camera-related Windows event logs and matching Application log errors;
-- USB power-policy output;
+- USB power-policy output, including the USB selective-suspend setting;
+- USB and Plug and Play warnings and errors from the System event log;
 - present driver records matching libusb, Zadig, WinUSB or APP Mode review terms;
 - a native stream test: opens DelanCam1 with Windows's own camera APIs, requests
   the 640x480 @ 60 FPS format head tracking uses when the camera offers it, and
   reads live frames for a few seconds to measure whether frames arrive, how
   fast, whether the stream stalls, and whether frame content changes between
-  captures;
+  captures, and reads the camera's exposure and image-control values at the
+  moment it was opened;
 - a per-format probe: opens the camera again for two seconds each in MJPG,
   NV12 and YUY2 at 640x480 and counts frames, so a camera that delivers
   nothing can be told apart from a Windows decoder problem that affects only
@@ -36,7 +42,11 @@ problem. It checks several layers that can affect a USB camera:
   missing files or third-party locations, the preferred MJPG decoder, the
   DoNotUse list and VFW codec entries;
 - names, versions, publishers and install dates of installed programs;
-- time since the last restart, Fast Startup and pending-reboot state.
+- time since the last restart, Fast Startup and pending-reboot state;
+- the machine the report came from: computer name, model, mainboard, masked
+  BIOS serial number and Windows installation date, condensed into one
+  `Machine:` line in the summary. A test on a second computer therefore
+  proves itself: the second report shows a different machine.
 
 The summary is intentionally conservative. A running application or installed
 security product is not automatically declared to be the cause. The report
@@ -104,6 +114,13 @@ conflicts are not always caused by the camera itself. This includes:
 
 - names and process IDs of running applications, but not their command lines;
 - names, identifiers and Windows error codes of PnP devices reporting problems;
+- computer name, manufacturer, model, mainboard, a masked BIOS serial number
+  (first two and last four characters) and the Windows installation date;
+- the camera's control values (exposure, brightness, contrast and similar), as
+  numbers;
+- names and hardware identifiers of the USB devices sharing the camera's host
+  controller, and USB/PnP event-log entries;
+- names, file paths and signers of kernel filter drivers in the camera path;
 - names of antivirus products registered with Windows Security Center;
 - selected Microsoft Defender protection-status fields;
 - camera privacy/access records exposed by Windows;
@@ -138,12 +155,14 @@ It contains:
 | --- | --- |
 | `SUMMARY.txt` | Support-facing result and review flags across camera, privacy, security software, applications and PnP |
 | `README.txt` | What the run collected and its privacy limits |
-| `windows.txt` | Windows edition, build, architecture, last boot time and computer manufacturer/model |
+| `windows.txt` | Windows edition, build, architecture, installation date, last boot time, computer name, manufacturer/model, mainboard, masked BIOS serial and the machine fingerprint |
 | `camera-devices.txt` | Present camera-class devices, bus descriptions, hardware IDs and instance IDs |
 | `delancam-properties.txt` | PnP properties of matching DelanCam1 devices |
 | `delancam-driver.txt` | Bound driver provider, version, date, INF, signature and signer |
 | `delancam-pnp.txt` | Device Manager/PnP status, service and `ConfigManagerErrorCode` |
 | `usb-path.txt` | DelanCam1 parent-device chain and USB location paths |
+| `usb-topology.txt` | Host controller, hub(s) between DelanCam1 and the root hub, and the other USB devices on the same controller |
+| `camera-controls.txt` | Exposure, brightness, contrast, white balance and other camera controls (supported, auto, value, range) as reported when the camera was opened |
 | `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened |
 | `format-probe.txt` | Frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with the negotiated format and any error per row |
 | `media-foundation.txt` | Windows hardware-decoder switch (`HardwareMFT`), Frame Server service state, and every registered Media Foundation video decoder with name, identifier, DLL path and whether it is a Windows or vendor component |
@@ -162,6 +181,8 @@ It contains:
 | `camera-event-logs.txt` | Recent entries from enabled Windows Camera/FrameServer event logs |
 | `application-camera-errors.txt` | Recent Application log warnings/errors matching camera or OpenTrack terms |
 | `power-usb.txt` | Active power scheme and USB power-policy output when available |
+| `usb-events.txt` | USB hub/controller, Kernel-PnP and power events from the System log (14 days): counts, warnings and errors, and the ones naming DelanCam1 |
+| `driver-stack.txt` | Upper/lower filter drivers on the camera, image, USB and media classes and on DelanCam1, plus the camera's driver stack, with file paths and signers |
 | `recent-device-events.txt` | Matching Kernel-PnP, UserPnp and DriverFrameworks events |
 | `setupapi-delancam.txt` | Matching excerpts from `setupapi.dev.log` |
 | `driver-conflict-hints.txt` | Present driver records matching libusb, Zadig, WinUSB or APP Mode review terms |
@@ -210,6 +231,19 @@ as NV12. A vendor MJPEG decoder registered in Media Foundation (graphics
 drivers ship them) can silently deliver no frames at all, which then looks
 exactly like a dead camera in the stream test although Windows Camera still
 shows a picture. The probe separates those two cases.
+
+The camera-control readout uses the same Windows Runtime session as the stream
+test (`VideoDeviceController`) and keeps numbers only. It exists because a
+manual exposure left near its maximum, or an automatic exposure stretched by a
+dark scene, caps the frame rate at a few FPS and washes the picture out, which
+looks exactly like a USB or hardware fault in every other measurement.
+
+The USB topology and event checks exist for the opposite case: a stream that
+stops after its first frame in every format. That pattern lives below Windows
+Camera and OpenTrack, in the isochronous USB link, the cable or the camera. The
+report shows whether a hub sits in the path, how busy the controller is and
+whether Windows logged resets, and the `Machine:` line lets the same tool prove
+whether the fault follows the camera to a second computer.
 
 The Media Foundation, DirectShow and VFW checks read registry registrations
 only (names, identifiers, file paths and whether the file exists). OpenTrack
