@@ -1,5 +1,10 @@
 # DelanCam1 Diagnostic Tool (Windows)
 
+Current version: **1.4.1**. The version number is shown in the title bar and
+the banner of the tool window and is written into every report (`SUMMARY.txt`
+and `README.txt` inside the ZIP), so a report can always be matched to the
+version that produced it.
+
 `DelanCam1-Diagnostics.cmd` collects Windows evidence that can explain
 why DelanCam1 is detected incorrectly, produces a corrupted image, or cannot be
 used normally by camera software.
@@ -69,10 +74,16 @@ review flags for Delanclip Support, not proof of a cause.
 3. Download `DelanCam1-Diagnostics.zip` from the latest release and
    unzip it. Do not run the tool from inside the ZIP.
 4. Run `DelanCam1-Diagnostics.cmd`.
-5. Read the privacy notice shown in the window, then press a key to continue.
-6. Wait for the tool to finish. The stream test briefly opens DelanCam1 and
-   takes a few seconds.
-7. Send Delanclip Support the Desktop ZIP whose name begins
+5. Read the short notice shown in the window, then press a key to continue.
+   The window explains only what the tool is about to do; the full list of
+   what it collects is in `README.txt` next to the tool and in this file.
+6. Wait for the tool to finish. The window lists each step as it runs, with
+   its number, name, result and time, and Windows PowerShell shows a progress
+   bar above the list. A full run usually takes one to two minutes; the
+   stream test briefly opens DelanCam1 for a few seconds of that.
+7. When the report is ready, a File Explorer window opens by itself with the
+   ZIP selected.
+8. Send Delanclip Support the Desktop ZIP whose name begins
    `SEND-TO-DELANCLIP-DelanCam1-Report-`.
 
 Administrator rights are not required. Some Windows information can be more
@@ -84,6 +95,22 @@ camera devices, including their hardware IDs and bus-reported descriptions, so
 support can review whether the camera appeared under an unexpected name.
 
 ## Privacy
+
+In short: the tool reads technical device information and Windows settings.
+It does not read, copy or send any of the customer's private data.
+
+### Camera privacy check
+
+Windows has a switch in Settings > Privacy & security > Camera that decides
+whether apps may use the camera at all, and under it a list of which apps used
+the camera and when. The tool only reads the state of that switch (the
+`ConsentStore\webcam` values and the AppPrivacy policy key) and that list,
+because a camera blocked there looks exactly like a broken one. It does not
+change these settings and it never looks at pictures, videos, documents,
+messages or accounts. This is the whole extent of the "privacy" part of the
+report.
+
+### What is never collected
 
 The tool does not collect:
 
@@ -197,6 +224,19 @@ run.
 The `.cmd` file contains its PowerShell implementation after a marker at the end
 of the same file. It reads that local section and executes it with Windows
 PowerShell, so there is nothing else to install or download.
+
+The version number lives in one place in the tool, the `DELAN_VERSION`
+variable at the top of the `.cmd` file. The batch part prints it in the window
+title and banner, and the PowerShell part reads it from the environment and
+writes it into `SUMMARY.txt` and the report `README.txt`. When releasing a new
+version, update that variable and the version lines at the top of this file
+and of `README.txt`.
+
+Each collection step runs through one wrapper that prints its number, name,
+result and duration to the window and drives the PowerShell progress bar. The
+total step count is counted from the script itself at start-up, so adding a
+step does not require touching the progress display. A failed step is marked
+in the window and recorded in `errors.txt`; the run continues.
 
 The script uses Windows PnP, CIM, Security Center, Defender, registry and event
 log interfaces already present in Windows. It does not change the state it

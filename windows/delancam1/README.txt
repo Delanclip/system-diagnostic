@@ -1,4 +1,7 @@
 Delanclip DelanCam1 Diagnostics
+Version 1.4.1
+
+The version number is shown in the title bar and the banner of the tool window and is written into every report (SUMMARY.txt and README.txt inside the ZIP).
 
 PURPOSE
 This tool collects Windows evidence that can explain DelanCam1 detection, driver, USB, privacy, security-software and application conflicts. It also briefly opens DelanCam1 to test its live video stream and read its exposure and image-control values, probes MJPG, NV12 and YUY2 separately, maps the USB path the camera is connected through (host controller, hubs, neighbouring devices), collects USB and Plug and Play events, lists kernel filter drivers in the camera path, and inspects the Windows video-decoder registrations (Media Foundation, DirectShow, VFW) and the installed-program list that camera software depends on. The summary names the machine the report came from, so a test on a second computer proves itself.
@@ -8,12 +11,16 @@ USAGE
 2. Unzip DelanCam1-Diagnostics.zip.
 3. Run DelanCam1-Diagnostics.cmd.
 4. Read the notice and press a key to continue.
-5. Wait until the report appears on your Desktop.
+5. Wait until the report appears on your Desktop. The window shows each step as it runs (step number, name, result and time); a full run usually takes one to two minutes. When the report is ready, a File Explorer window opens by itself with the ZIP selected.
 6. Send Delanclip Support the ZIP whose name starts SEND-TO-DELANCLIP-DelanCam1-Report-.
 
 Close other apps that may use a camera (Windows Camera, OBS, Teams, Discord, OpenTrack) before step 3, so the stream test can open DelanCam1 without another app already holding it.
 
 PRIVACY
+In short: the tool reads technical device information and Windows settings. It does not read, copy or send any of your private data.
+
+Camera privacy check: Windows has a switch in Settings > Privacy & security > Camera that decides whether apps may use the camera at all, and under it a list of which apps used the camera and when. The tool only reads the state of that switch and that list, because a camera blocked there looks exactly like a broken one. It does not change these settings and it never looks at pictures, videos, documents, messages or accounts.
+
 The tool does not collect camera images or video, command lines of running processes, browser history, passwords, emails, personal documents, photos or their contents.
 
 It does not collect Microsoft Defender threat history or antivirus scan contents.
