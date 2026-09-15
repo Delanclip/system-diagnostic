@@ -126,6 +126,11 @@ $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $desktop = [Environment]::GetFolderPath('Desktop')
+if (-not $desktop -or -not (Test-Path -LiteralPath $desktop)) {
+    # A SYSTEM console (remote-support session) has no usable Desktop folder.
+    $desktop = Join-Path $env:SystemDrive 'temp'
+    if (-not (Test-Path -LiteralPath $desktop)) { New-Item -ItemType Directory -Force -Path $desktop | Out-Null }
+}
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $backupDir = Join-Path $desktop ("DelanCam1-FixTool-backup-" + $stamp)
 $script:LogPath = Join-Path $desktop ("DelanCam1-FixTool-check-" + $stamp + ".txt")
@@ -1046,9 +1051,12 @@ try {
 
     if ($fixes.Count -eq 0) {
         Write-ToolLog ''
-        Write-ToolLog 'No repairs are needed. If OpenTrack still cannot open DelanCam1, send Delanclip Support the diagnostic report and this log.' 'Green'
         $manualLeft = @($script:Findings | Where-Object { $_.Severity -eq 'MANUAL' -or $_.Severity -eq 'WARN' })
-        if ($manualLeft.Count -gt 0) { exit 2 }
+        if ($manualLeft.Count -gt 0) {
+            Write-ToolLog 'Nothing for this tool to repair automatically. The items marked MANUAL or WARN above need a person; follow their instructions, then run the tool again.' 'Yellow'
+            exit 2
+        }
+        Write-ToolLog 'No repairs are needed. If OpenTrack still cannot open DelanCam1, send Delanclip Support the diagnostic report and this log.' 'Green'
         exit 0
     }
 
