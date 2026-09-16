@@ -1,5 +1,5 @@
 Delanclip DelanCam1 Diagnostics
-Version 1.4.1
+Version 1.4.2
 
 The version number is shown in the title bar and the banner of the tool window and is written into every report (SUMMARY.txt and README.txt inside the ZIP).
 
@@ -47,7 +47,7 @@ The report ZIP contains:
 - usb-topology.txt - host controller, hub(s) between DelanCam1 and the root hub, other USB devices on the same controller
 - camera-controls.txt - exposure, brightness, contrast, white balance and other camera controls (supported, auto, value, range)
 - stream-test.txt - result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS, the settings head tracking uses, when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened
-- format-probe.txt - frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30
+- format-probe.txt - frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with a verdict read per row: healthy, all zero, MJPEG-only failure (every MJPEG row empty, every raw row streaming, no MJPEG frames in the stream test either), intermittent start (MJPEG streamed in the stream test but not in the probe) or erratic start (rows inconsistent)
 - media-foundation.txt - Windows hardware-decoder switch, Frame Server state and every registered Media Foundation video decoder (name, identifier, DLL path, Windows or vendor)
 - directshow.txt - DirectShow core components, software/virtual cameras, filters with missing files or third-party locations, preferred MJPG decoder, DoNotUse list and VFW codec entries (64-bit and 32-bit views)
 - installed-software.txt - installed programs (name, version, publisher, install date), camera/codec/tracking/security/cleaner-related entries first
@@ -57,11 +57,11 @@ The report ZIP contains:
 - defender-status.txt - selected Microsoft Defender protection status
 - camera-policy.txt - Windows camera-access policy values
 - camera-privacy.txt - camera consent values exposed by Windows
-- camera-access-history.txt - recent per-application camera access records, with user profile names redacted
+- camera-access-history.txt - recent per-application camera access records, with user profile names redacted; SUMMARY.txt names the most recent use before the run and any application that still held the camera while the tool ran
 - running-processes.txt - system-wide process names and process IDs only
 - potential-camera-apps.txt - process names matching camera, tracking or virtual-camera review terms
 - camera-services.txt - camera-related Windows services and status
-- camera-event-logs.txt - recent events from enabled Windows camera/FrameServer logs
+- camera-event-logs.txt - events from enabled Windows camera/FrameServer logs, in two parts per log: up to 200 events from the 7 days before the tool started, then up to 100 events the run itself generated
 - application-camera-errors.txt - recent Application log warnings/errors matching camera/OpenTrack terms
 - power-usb.txt - active power scheme and USB power-policy output
 - usb-events.txt - USB hub/controller, Kernel-PnP and power events from the System log (14 days), with the ones naming DelanCam1 listed separately

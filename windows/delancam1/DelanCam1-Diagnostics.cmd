@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "DELAN_VERSION=1.4.1"
+set "DELAN_VERSION=1.4.2"
 title Delanclip DelanCam1 Diagnostics v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 
@@ -55,7 +55,8 @@ $ErrorActionPreference = 'Stop'
 $script:toolVersion = if ($env:DELAN_VERSION) { $env:DELAN_VERSION } else { 'unknown' }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$script:toolStartTime = Get-Date
+$stamp = $script:toolStartTime.ToString('yyyyMMdd-HHmmss')
 $work = Join-Path $env:TEMP ("Delanclip-DelanCam1-Diagnostics-" + $stamp)
 $zipPath = Join-Path $desktop ("SEND-TO-DELANCLIP-DelanCam1-Report-" + $stamp + ".zip")
 
@@ -182,7 +183,9 @@ Collected:
 - a filtered list of processes that may use cameras, tracking or virtual-camera functions
 - camera-related Windows services
 - recent Windows camera-access registry history with user profile names redacted
-- recent camera-related Windows event logs and matching application errors
+- recent camera-related Windows event logs (events from before the tool
+  started listed separately from the ones the run generated) and matching
+  application errors
 - recent matching PnP events and SetupAPI excerpts
 - a short native stream test: opens DelanCam1 with Windows camera APIs,
   requests the 640x480 @ 60 FPS format head tracking uses when available,
@@ -503,6 +506,7 @@ $script:streamTestMinorHiccup = $false
 $script:streamTestFirstFrameDelayMs = -1
 $script:streamTestMaxGapMs = 0
 $script:streamTestApiError = $null
+$script:streamTestSubtype = ''
 Run-Step 'DelanCam1 stream test' {
     $path = Join-Path $work 'stream-test.txt'
     $lines = New-Object System.Collections.Generic.List[string]
@@ -933,6 +937,7 @@ Run-Step 'DelanCam1 stream test' {
 
         $script:streamTestOpened = $true
         $script:streamTestFramesReceived = $stats.FramesArrived
+        $script:streamTestSubtype = [string]$current.Subtype
         $script:streamTestAcquisitions = $stats.Acquisitions
         $script:streamTestMeasuredFps = $measuredFps
         $script:streamTestZeroLengthFrames = $stats.ZeroLengthFrames
@@ -1042,6 +1047,9 @@ $script:formatProbeError = $null
 $script:formatProbeMjpgFrames = 0
 $script:formatProbeRawFrames = 0
 $script:formatProbeRows = 0
+$script:formatProbeRowResults = @()
+$script:formatProbeVerdict = 'not-run'
+$script:formatProbeRowText = ''
 Run-Step 'DelanCam1 format probe' {
     $path = Join-Path $work 'format-probe.txt'
     $lines = New-Object System.Collections.Generic.List[string]
@@ -1219,22 +1227,68 @@ Run-Step 'DelanCam1 format probe' {
             $lines.Add(('{0,-18} {1,-18} {2,-8} {3,-8} {4,6} {5,8}  {6}' -f $want, $row.Negotiated, $row.SetFmt, $row.Start, $row.Frames, $row.FirstMs, $row.Error))
             $script:formatProbeRows++
             if ($want -like 'MJPG*') { $script:formatProbeMjpgFrames += $row.Frames } else { $script:formatProbeRawFrames += $row.Frames }
+            $script:formatProbeRowResults += [PSCustomObject]@{ Format = $want; Kind = $(if ($want -like 'MJPG*') { 'MJPG' } else { 'RAW' }); Frames = [int]$row.Frames; Error = [string]$row.Error }
             Start-Sleep -Milliseconds 300
         }
 
         $lines.Add('')
         $lines.Add("MJPG frames total: $script:formatProbeMjpgFrames   NV12/YUY2 frames total: $script:formatProbeRawFrames")
-        if ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -gt 0) {
-            $lines.Add('Reading: the camera streams normally in raw formats but every MJPEG request yields nothing. That is a')
-            $lines.Add('Windows-side MJPEG decoding problem (see media-foundation.txt), not a camera or USB fault. Apps that')
-            $lines.Add('pick raw formats (Windows Camera) keep working; apps that ask for MJPEG (OpenTrack, AITrack) get nothing.')
-        }
-        elseif ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -eq 0) {
-            $lines.Add('Reading: no format delivered frames. This points to USB, cable, driver or hardware, or to another')
-            $lines.Add('application holding the camera.')
-        }
-        else {
-            $lines.Add('Reading: frames arrived in MJPEG and raw formats. The Media Foundation path to this camera is healthy.')
+
+        # Verdict per row, not per total. A decoder fault fails every MJPEG row and none of the raw rows;
+        # anything less regular is the camera or its USB link starting erratically.
+        $healthyRowFrames = 5
+        $mjpgRows = @($script:formatProbeRowResults | Where-Object { $_.Kind -eq 'MJPG' })
+        $rawRows = @($script:formatProbeRowResults | Where-Object { $_.Kind -eq 'RAW' })
+        $mjpgAllZero = ($mjpgRows.Count -gt 0) -and (@($mjpgRows | Where-Object { $_.Frames -gt 0 }).Count -eq 0)
+        $rawAllHealthy = ($rawRows.Count -gt 0) -and (@($rawRows | Where-Object { $_.Frames -lt $healthyRowFrames }).Count -eq 0)
+        $rawAllZero = ($rawRows.Count -gt 0) -and (@($rawRows | Where-Object { $_.Frames -gt 0 }).Count -eq 0)
+        $mjpgAllHealthy = ($mjpgRows.Count -gt 0) -and (@($mjpgRows | Where-Object { $_.Frames -lt $healthyRowFrames }).Count -eq 0)
+        $weakRows = @($script:formatProbeRowResults | Where-Object { $_.Frames -lt $healthyRowFrames })
+        $streamMjpgHealthy = ($script:streamTestOpened -and $script:streamTestSubtype -match '(?i)MJPG' -and $script:streamTestFramesReceived -ge $healthyRowFrames)
+        $script:formatProbeRowText = (($script:formatProbeRowResults | ForEach-Object { '{0} {1}' -f $_.Format, $_.Frames }) -join ', ')
+
+        if ($script:formatProbeRowResults.Count -eq 0) { $script:formatProbeVerdict = 'no-rows' }
+        elseif ($mjpgAllHealthy -and $rawAllHealthy) { $script:formatProbeVerdict = 'healthy' }
+        elseif ($script:formatProbeMjpgFrames -eq 0 -and $rawAllZero) { $script:formatProbeVerdict = 'all-zero' }
+        elseif ($mjpgAllZero -and $rawAllHealthy -and (-not $streamMjpgHealthy)) { $script:formatProbeVerdict = 'mjpeg-only-fails' }
+        elseif ($mjpgAllZero -and $rawAllHealthy -and $streamMjpgHealthy) { $script:formatProbeVerdict = 'intermittent-start' }
+        elseif ($rawAllZero -and $mjpgAllHealthy) { $script:formatProbeVerdict = 'raw-only-fails' }
+        else { $script:formatProbeVerdict = 'erratic' }
+
+        $lines.Add("Per-row result: $script:formatProbeRowText")
+        switch ($script:formatProbeVerdict) {
+            'healthy' {
+                $lines.Add('Reading: frames arrived in MJPEG and raw formats. The Media Foundation path to this camera is healthy.')
+            }
+            'all-zero' {
+                $lines.Add('Reading: no format delivered frames. This points to USB, cable, driver or hardware, or to another')
+                $lines.Add('application holding the camera (see camera-access-history.txt for an app with a start time and no stop).')
+            }
+            'mjpeg-only-fails' {
+                $lines.Add('Reading: every raw row streamed normally and every MJPEG row delivered nothing, and the stream test did')
+                $lines.Add('not get MJPEG frames either. That is a Windows-side MJPEG decoding problem (see media-foundation.txt),')
+                $lines.Add('not a camera or USB fault. Apps that pick raw formats (Windows Camera) keep working; apps that ask for')
+                $lines.Add('MJPEG (OpenTrack, AITrack) get nothing.')
+            }
+            'intermittent-start' {
+                $lines.Add("Reading: the stream test received $script:streamTestFramesReceived MJPEG frames seconds before this probe, yet every MJPEG row")
+                $lines.Add('now delivers nothing while raw rows stream. A broken decoder fails every time; this is a camera that')
+                $lines.Add('starts only sometimes. Treat it as an intermittent start, not as an MJPEG decoder fault.')
+            }
+            'raw-only-fails' {
+                $lines.Add('Reading: MJPEG delivered frames but the raw formats did not. Unusual; the raw path is not what head')
+                $lines.Add('tracking uses, but an erratic camera start cannot be ruled out.')
+            }
+            'erratic' {
+                $lines.Add('Reading: the rows are inconsistent (' + (($weakRows | ForEach-Object { '{0} {1}' -f $_.Format, $_.Frames }) -join ', ') + ' below ' + $healthyRowFrames + ' frames).')
+                $lines.Add('A decoder problem fails the same format every time; a camera that streams in one row and delivers')
+                $lines.Add('nothing or a single frame in the next is starting erratically. That lives in the USB isochronous')
+                $lines.Add('link, the cable or the camera itself, not in Windows decoders. The same probe from this tool on a')
+                $lines.Add('second computer tells whether it follows the camera.')
+            }
+            default {
+                $lines.Add('Reading: no format could be probed. See the rows above.')
+            }
         }
     }
     catch {
@@ -1314,6 +1368,8 @@ $script:dshowPreferredMjpgIssue = $null
 $script:dshowDoNotUse = @()
 $script:vfwMissing64 = @()
 $script:vfwMissing32 = @()
+$script:vfwNotShipped64 = @()
+$script:vfwNotShipped32 = @()
 Run-Step 'DirectShow registrations' {
     $path = Join-Path $work 'directshow.txt'
     $lines = New-Object System.Collections.Generic.List[string]
@@ -1439,9 +1495,13 @@ Run-Step 'DirectShow registrations' {
                 $lines.Add(('{0,-14} {1}' -f $prop.Name, $prop.Value))
             }
         }
-        $missing = @($expectedVfw.Keys | Where-Object { -not $present.ContainsKey($_) } | Sort-Object)
-        if ($missing.Count -gt 0) { $lines.Add('Missing stock entries: ' + ($missing -join ', ')) }
-        if ($view.Name -eq '64-bit') { $script:vfwMissing64 = $missing } else { $script:vfwMissing32 = $missing }
+        $sysDir = if ($view.Name -eq '64-bit') { Join-Path $env:windir 'System32' } else { Join-Path $env:windir 'SysWOW64' }
+        $missingAll = @($expectedVfw.Keys | Where-Object { -not $present.ContainsKey($_) } | Sort-Object)
+        $missing = @($missingAll | Where-Object { Test-Path -LiteralPath (Join-Path $sysDir $expectedVfw[$_]) })
+        $notShipped = @($missingAll | Where-Object { -not (Test-Path -LiteralPath (Join-Path $sysDir $expectedVfw[$_])) })
+        if ($missing.Count -gt 0) { $lines.Add('Missing stock entries (DLL present in ' + $sysDir + ', registration gone): ' + ($missing -join ', ')) }
+        if ($notShipped.Count -gt 0) { $lines.Add('Not registered and DLL not shipped in ' + $sysDir + ' (normal on this Windows build): ' + (($notShipped | ForEach-Object { $_ + ' (' + $expectedVfw[$_] + ')' }) -join ', ')) }
+        if ($view.Name -eq '64-bit') { $script:vfwMissing64 = $missing; $script:vfwNotShipped64 = $notShipped } else { $script:vfwMissing32 = $missing; $script:vfwNotShipped32 = $notShipped }
         $lines.Add('')
     }
     $cachePresent = Test-Path -LiteralPath 'HKCU:\Software\Microsoft\ActiveMovie\devenum'
@@ -1599,6 +1659,8 @@ Run-Step 'Camera access policy' {
 
 $script:cameraConsentRoots = @()
 $script:possibleActiveCameraRecords = @()
+$script:cameraUseRecords = @()
+$script:cameraHeldByOtherApp = @()
 Run-Step 'Camera privacy and access history' {
     $privacyPath = Join-Path $work 'camera-privacy.txt'
     $historyPath = Join-Path $work 'camera-access-history.txt'
@@ -1641,6 +1703,19 @@ Run-Step 'Camera privacy and access history' {
                 $stopNum = [int64]$stopValue
                 if ($startNum -gt 0 -and ($stopNum -eq 0 -or $stopNum -lt $startNum)) {
                     $script:possibleActiveCameraRecords += $displayPath
+                }
+                if ($startNum -gt 0) {
+                    $appLabel = ($displayPath -split '[\\#]')[-1]
+                    $startLocal = [DateTime]::FromFileTimeUtc($startNum).ToLocalTime()
+                    $stopLocal = $null
+                    if ($stopNum -gt $startNum) { $stopLocal = [DateTime]::FromFileTimeUtc($stopNum).ToLocalTime() }
+                    $isThisTool = ($appLabel -match '(?i)^powershell\.exe$' -and $startLocal -ge $script:toolStartTime.AddSeconds(-5))
+                    if (-not $isThisTool) {
+                        $script:cameraUseRecords += [PSCustomObject]@{ App = $appLabel; Start = $startLocal; Stop = $stopLocal; Path = $displayPath }
+                        if ($null -eq $stopLocal -and $startLocal -lt $script:toolStartTime) {
+                            $script:cameraHeldByOtherApp += ('{0} since {1}' -f $appLabel, $startLocal.ToString('yyyy-MM-dd HH:mm:ss'))
+                        }
+                    }
                 }
             }
             catch {}
@@ -1697,9 +1772,13 @@ Run-Step 'Camera-related services' {
 }
 
 $script:cameraEventCount = 0
+$script:cameraEventCountBefore = 0
+$script:cameraEventCountDuring = 0
 Run-Step 'Camera event logs' {
     $path = Join-Path $work 'camera-event-logs.txt'
-    $start = (Get-Date).AddDays(-7)
+    $start = $script:toolStartTime.AddDays(-7)
+    ('Tool started: ' + $script:toolStartTime.ToString('yyyy-MM-dd HH:mm:ss zzz') + '. Each log lists events from before the tool started first, then the events this run generated itself.') | Set-Content -LiteralPath $path -Encoding UTF8
+    Add-Content -LiteralPath $path -Value '' -Encoding UTF8
     $logs = @(Get-WinEvent -ListLog * -ErrorAction SilentlyContinue | Where-Object {
         $_.LogName -match '(?i)(camera|frameserver)' -and $_.IsEnabled
     })
@@ -1710,25 +1789,34 @@ Run-Step 'Camera event logs' {
     else {
         foreach ($log in $logs) {
             Add-Content -LiteralPath $path -Value "===== $($log.LogName) =====" -Encoding UTF8
-            try {
-                $events = @(Get-WinEvent -FilterHashtable @{LogName=$log.LogName; StartTime=$start} -ErrorAction Stop | Select-Object -First 100)
-                $script:cameraEventCount += $events.Count
-                if ($events.Count -eq 0) {
-                    Add-Content -LiteralPath $path -Value 'No events in the previous 7 days.' -Encoding UTF8
+            $sections = @(
+                @{ Title = ('--- Events BEFORE the tool started (up to 200, newest first, since ' + $start.ToString('yyyy-MM-dd HH:mm') + ') ---'); Filter = @{LogName=$log.LogName; StartTime=$start; EndTime=$script:toolStartTime}; Limit = 200; Bucket = 'before' },
+                @{ Title = ('--- Events DURING this diagnostic run (from ' + $script:toolStartTime.ToString('yyyy-MM-dd HH:mm:ss') + ', generated by the stream test and probe; up to 100) ---'); Filter = @{LogName=$log.LogName; StartTime=$script:toolStartTime}; Limit = 100; Bucket = 'during' }
+            )
+            foreach ($section in $sections) {
+                Add-Content -LiteralPath $path -Value $section.Title -Encoding UTF8
+                try {
+                    $events = @(Get-WinEvent -FilterHashtable $section.Filter -ErrorAction Stop | Select-Object -First $section.Limit)
+                    if ($section.Bucket -eq 'before') { $script:cameraEventCountBefore += $events.Count } else { $script:cameraEventCountDuring += $events.Count }
+                    $script:cameraEventCount += $events.Count
+                    if ($events.Count -eq 0) {
+                        Add-Content -LiteralPath $path -Value 'No events in this window.' -Encoding UTF8
+                    }
+                    else {
+                        $events |
+                            Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
+                            Format-List |
+                            Out-String -Width 500 |
+                            Add-Content -LiteralPath $path -Encoding UTF8
+                    }
                 }
-                else {
-                    $events |
-                        Select-Object TimeCreated, Id, LevelDisplayName, ProviderName, Message |
-                        Format-List |
-                        Out-String -Width 500 |
-                        Add-Content -LiteralPath $path -Encoding UTF8
+                catch {
+                    if ($_.Exception.Message -match '(?i)No events were found') {
+                        Add-Content -LiteralPath $path -Value 'No events in this window.' -Encoding UTF8
+                    }
+                    else { Record-Error -Step ("Camera event log " + $log.LogName) -Err $_ }
                 }
-            }
-            catch {
-                if ($_.Exception.Message -match '(?i)No events were found') {
-                    Add-Content -LiteralPath $path -Value 'No events in the previous 7 days.' -Encoding UTF8
-                }
-                else { Record-Error -Step ("Camera event log " + $log.LogName) -Err $_ }
+                Add-Content -LiteralPath $path -Value '' -Encoding UTF8
             }
             Add-Content -LiteralPath $path -Value '' -Encoding UTF8
         }
@@ -2076,11 +2164,17 @@ Run-Step 'Diagnostic summary' {
             $summary.Add('REVIEW: DelanCam1 delivered frames, but none carried a usable timestamp, so frame-rate metrics could not be measured. See stream-test.txt.')
         }
         elseif ($script:streamTestFramesReceived -eq 0) {
-            if ($script:formatProbePerformed -and $script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -gt 0) {
-                $summary.Add("REVIEW HIGH: DelanCam1 delivered zero MJPEG frames, yet $script:formatProbeRawFrames NV12/YUY2 frame(s) arrived in the format probe. The camera and USB link work; MJPEG decoding inside Windows Media Foundation is broken on this PC. See FORMAT PROBE and WINDOWS VIDEO PIPELINE below.")
+            if ($script:cameraHeldByOtherApp.Count -gt 0) {
+                $summary.Add('REVIEW: DelanCam1 opened but delivered zero frames while another application had the camera open: ' + ($script:cameraHeldByOtherApp -join '; ') + '. Zero frames in that state do not prove a fault. Close that application and run the tool again before reading anything into this result.')
             }
-            elseif ($script:formatProbePerformed -and $script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -eq 0) {
+            elseif ($script:formatProbePerformed -and $script:formatProbeVerdict -eq 'mjpeg-only-fails') {
+                $summary.Add("REVIEW HIGH: DelanCam1 delivered zero MJPEG frames, yet every raw row of the format probe streamed normally ($script:formatProbeRowText). The camera and USB link work; MJPEG decoding inside Windows Media Foundation is broken on this PC. See FORMAT PROBE and WINDOWS VIDEO PIPELINE below.")
+            }
+            elseif ($script:formatProbePerformed -and $script:formatProbeVerdict -eq 'all-zero') {
                 $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames in the stream test and in every probed format. This points to USB, cable, driver or hardware, or to another application holding the camera, not to the application layer.')
+            }
+            elseif ($script:formatProbePerformed -and $script:formatProbeVerdict -eq 'erratic') {
+                $summary.Add("REVIEW HIGH: DelanCam1 opened but delivered zero frames in the stream test, and the format probe rows are inconsistent ($script:formatProbeRowText). A camera that streams in one attempt and not in the next is starting erratically: USB isochronous link, cable or the camera itself. See FORMAT PROBE below.")
             }
             else {
                 $summary.Add('REVIEW HIGH: DelanCam1 opened but delivered zero frames. This points to USB, driver or hardware, not the application layer. See format-probe.txt for whether the failure is format-specific.')
@@ -2151,17 +2245,34 @@ Run-Step 'Diagnostic summary' {
     }
     else {
         $summary.Add("MJPG frames: $script:formatProbeMjpgFrames, NV12/YUY2 frames: $script:formatProbeRawFrames across $script:formatProbeRows probed format(s), 2 s each.")
-        if ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -gt 0) {
-            $summary.Add('REVIEW HIGH: MJPEG delivers nothing while raw formats stream normally. The camera and USB link are fine; MJPEG decoding inside Windows Media Foundation is broken on this PC. Windows Camera (raw formats) keeps working, OpenTrack and AITrack (MJPEG) get no frames. Check WINDOWS VIDEO PIPELINE below for the decoder responsible.')
-        }
-        elseif ($script:formatProbeMjpgFrames -eq 0 -and $script:formatProbeRawFrames -eq 0) {
-            $summary.Add('REVIEW HIGH: No probed format delivered frames. This points to USB, cable, driver or hardware, or to another application holding the camera.')
-        }
-        elseif ($script:formatProbeMjpgFrames -gt 0 -and $script:formatProbeRawFrames -gt 0) {
-            $summary.Add('Every probed format delivered frames: the Media Foundation path to this camera is healthy. If OpenTrack still cannot open the camera, the fault is in the DirectShow layer it uses; see WINDOWS VIDEO PIPELINE below.')
-        }
-        else {
-            $summary.Add('MJPEG delivered frames but the raw formats did not. Unusual; see format-probe.txt.')
+        $summary.Add("Per row: $script:formatProbeRowText.")
+        switch ($script:formatProbeVerdict) {
+            'mjpeg-only-fails' {
+                $summary.Add('REVIEW HIGH: Every MJPEG row delivered nothing while every raw row streamed normally, and the stream test got no MJPEG frames either. The camera and USB link are fine; MJPEG decoding inside Windows Media Foundation is broken on this PC. Windows Camera (raw formats) keeps working, OpenTrack and AITrack (MJPEG) get no frames. Check WINDOWS VIDEO PIPELINE below for the decoder responsible.')
+            }
+            'intermittent-start' {
+                $summary.Add("REVIEW HIGH: Intermittent start. The stream test received $script:streamTestFramesReceived MJPEG frames at $script:streamTestMeasuredFps FPS seconds before the probe, then every MJPEG row of the probe delivered nothing while raw rows streamed. A broken decoder fails every time, so this is not an MJPEG decoder fault: the camera starts only sometimes. That pattern lives in the USB isochronous link, the cable or the camera itself. The same tool on a second computer (different Machine line) tells whether it follows the camera.")
+            }
+            'erratic' {
+                $summary.Add("REVIEW HIGH: Erratic start. The probe rows are inconsistent: some formats streamed, others delivered nothing or a single frame, with no Windows error. A decoder problem fails the same format every time; a camera that streams in one attempt and not in the next is failing to (re)start its USB isochronous stream. This points to the USB link, the cable or the camera itself, not to Windows decoders. The same tool on a second computer (different Machine line) tells whether it follows the camera.")
+            }
+            'all-zero' {
+                if ($script:cameraHeldByOtherApp.Count -gt 0) {
+                    $summary.Add('REVIEW: No probed format delivered frames, but another application had the camera open during this run (' + ($script:cameraHeldByOtherApp -join '; ') + '). Close it and run the tool again; this result proves nothing by itself.')
+                }
+                else {
+                    $summary.Add('REVIEW HIGH: No probed format delivered frames. This points to USB, cable, driver or hardware, or to another application holding the camera.')
+                }
+            }
+            'healthy' {
+                $summary.Add('Every probed format delivered frames: the Media Foundation path to this camera is healthy. If OpenTrack still cannot open the camera, the fault is in the DirectShow layer it uses; see WINDOWS VIDEO PIPELINE below.')
+            }
+            'raw-only-fails' {
+                $summary.Add('MJPEG delivered frames but the raw formats did not. Unusual; head tracking uses MJPEG, so this does not block OpenTrack by itself, but an erratic camera start cannot be ruled out. See format-probe.txt.')
+            }
+            default {
+                $summary.Add('The probe produced no per-format rows. See format-probe.txt.')
+            }
         }
     }
 
@@ -2192,7 +2303,18 @@ Run-Step 'Diagnostic summary' {
     if ($script:mftVendorMjpeg.Count -gt 0) {
         $pipelineFindings++
         if ($null -eq $script:mftHardwareDecoders -or $script:mftHardwareDecoders -ne 0) {
-            $summary.Add('REVIEW HIGH: A vendor MJPEG decoder is registered in Media Foundation and hardware decoders are enabled: ' + ($script:mftVendorMjpeg -join ', ') + '. Such decoders are known to swallow every MJPEG frame while raw formats keep working. Compare with FORMAT PROBE. See media-foundation.txt.')
+            $mjpegDecodedHere = 0
+            if ($script:streamTestOpened -and $script:streamTestSubtype -match '(?i)MJPG') { $mjpegDecodedHere += $script:streamTestFramesReceived }
+            $mjpegDecodedHere += $script:formatProbeMjpgFrames
+            if ($script:formatProbeVerdict -eq 'mjpeg-only-fails') {
+                $summary.Add('REVIEW HIGH: A vendor MJPEG decoder is registered in Media Foundation and hardware decoders are enabled: ' + ($script:mftVendorMjpeg -join ', ') + '. The format probe shows exactly its signature: every MJPEG row empty, every raw row streaming. This is the decoder to disable (HardwareMFT EnableDecoders=0). See media-foundation.txt.')
+            }
+            elseif ($mjpegDecodedHere -ge 5) {
+                $summary.Add('INFO: A vendor MJPEG decoder is registered in Media Foundation and hardware decoders are enabled: ' + ($script:mftVendorMjpeg -join ', ') + ". This is normal on every PC with that graphics driver. In this run $mjpegDecodedHere MJPEG frame(s) were decoded, so the decoder is not blocking MJPEG here.")
+            }
+            else {
+                $summary.Add('REVIEW: A vendor MJPEG decoder is registered in Media Foundation and hardware decoders are enabled: ' + ($script:mftVendorMjpeg -join ', ') + '. Such decoders can swallow every MJPEG frame while raw formats keep working, but this run produced no MJPEG evidence either way. Compare with FORMAT PROBE. See media-foundation.txt.')
+            }
         }
         else {
             $summary.Add('INFO: A vendor MJPEG decoder is registered in Media Foundation, but hardware decoders are disabled (EnableDecoders=0), so it is not used: ' + ($script:mftVendorMjpeg -join ', ') + '.')
@@ -2228,7 +2350,16 @@ Run-Step 'Diagnostic summary' {
     }
     if ($script:vfwMissing64.Count -gt 0) {
         $pipelineFindings++
-        $summary.Add('REVIEW HIGH: 64-bit VFW codec registrations missing from Drivers32: ' + ($script:vfwMissing64 -join ', ') + '. 64-bit DirectShow apps such as OpenTrack need vidc.yuy2 (msyuv.dll) to convert camera frames to RGB; without it the capture graph fails to build even with MJPEG off.')
+        $cameraCodecs = @($script:vfwMissing64 | Where-Object { $_ -match '(?i)^vidc\.(yuy2|uyvy|yvyu|i420|iyuv)$' })
+        if ($cameraCodecs.Count -gt 0) {
+            $summary.Add('REVIEW HIGH: 64-bit VFW codec registrations missing from Drivers32 although Windows ships the DLL: ' + ($script:vfwMissing64 -join ', ') + '. 64-bit DirectShow apps such as OpenTrack need vidc.yuy2 (msyuv.dll) to convert camera frames to RGB; without it the capture graph fails to build even with MJPEG off.')
+        }
+        else {
+            $summary.Add('REVIEW: 64-bit VFW codec registrations missing from Drivers32 although Windows ships the DLL: ' + ($script:vfwMissing64 -join ', ') + '. None of them is a camera pixel-format converter (yuy2, uyvy, yvyu, i420, iyuv), so this does not block OpenTrack by itself; it still shows a registry cleaner or uninstaller touched Drivers32.')
+        }
+    }
+    if ($script:vfwNotShipped64.Count -gt 0) {
+        $summary.Add('INFO: 64-bit VFW entries absent because this Windows build does not ship the codec DLL: ' + ($script:vfwNotShipped64 -join ', ') + '. Normal, not a fault.')
     }
     if ($script:vfwMissing32.Count -gt 0) {
         $pipelineFindings++
@@ -2288,6 +2419,25 @@ Run-Step 'Diagnostic summary' {
             $summary.Add("REVIEW HIGH: Camera consent value is Deny at $($root.Path)")
         }
     }
+    $recentUses = @($script:cameraUseRecords | Where-Object { $_.Start -lt $script:toolStartTime } | Sort-Object Start -Descending | Select-Object -First 3)
+    if ($recentUses.Count -gt 0) {
+        $last = $recentUses[0]
+        $ageMin = [math]::Round(($script:toolStartTime - $last.Start).TotalMinutes, 1)
+        if ($null -ne $last.Stop) {
+            $durS = [math]::Round(($last.Stop - $last.Start).TotalSeconds, 0)
+            $line = 'Most recent camera use before this run: {0} from {1} to {2} ({3} s), {4} min before the tool started.' -f $last.App, $last.Start.ToString('yyyy-MM-dd HH:mm:ss'), $last.Stop.ToString('HH:mm:ss'), $durS, $ageMin
+            if ($ageMin -le 30 -and $durS -le 15 -and $last.App -match '(?i)opentrack|aitrack|facetrack|eyeware|trackir|camera') {
+                $line += ' A session of a few seconds right before a report is typically a failed start; this report was taken in the state that produced it.'
+            }
+            $summary.Add($line)
+        }
+        else {
+            $summary.Add(('Most recent camera use before this run: {0} opened the camera at {1} and had not released it when the tool started ({2} min earlier).' -f $last.App, $last.Start.ToString('yyyy-MM-dd HH:mm:ss'), $ageMin))
+        }
+    }
+    if ($script:cameraHeldByOtherApp.Count -gt 0) {
+        $summary.Add('REVIEW: Another application held the camera while this tool ran: ' + ($script:cameraHeldByOtherApp -join '; ') + '. The stream test and format probe then share the camera with it, and zero frames in that state prove nothing. Close it and run the tool again.')
+    }
     if ($script:possibleActiveCameraRecords.Count -gt 0) {
         $summary.Add('REVIEW: Windows camera-access history contains records that may indicate camera use without a recorded stop.')
         foreach ($item in ($script:possibleActiveCameraRecords | Select-Object -Unique | Select-Object -First 10)) {
@@ -2333,7 +2483,7 @@ Run-Step 'Diagnostic summary' {
         $summary.Add("REVIEW: Found $($script:applicationCameraErrors.Count) recent Application log warning/error event(s) matching camera/OpenTrack terms.")
     }
     if ($script:cameraEventCount -gt 0) {
-        $summary.Add("INFO: Collected $script:cameraEventCount event(s) from enabled camera-related Windows event logs.")
+        $summary.Add("INFO: Collected $script:cameraEventCountBefore camera-log event(s) from the 7 days before the tool started and $script:cameraEventCountDuring generated during this run. See camera-event-logs.txt.")
     }
     if ($script:usbEventCameraHits -gt 0) {
         $summary.Add("REVIEW: $script:usbEventCameraHits USB/PnP warning or error event(s) in the last 14 days name DelanCam1 (resets, failed requests, surprise removals). See usb-events.txt.")
