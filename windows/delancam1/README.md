@@ -1,6 +1,6 @@
 # DelanCam1 Diagnostic Tool (Windows)
 
-Current version: **1.4.1**. The version number is shown in the title bar and
+Current version: **1.4.2**. The version number is shown in the title bar and
 the banner of the tool window and is written into every report (`SUMMARY.txt`
 and `README.txt` inside the ZIP), so a report can always be matched to the
 version that produced it.
@@ -203,7 +203,7 @@ It contains:
 | `usb-topology.txt` | Host controller, hub(s) between DelanCam1 and the root hub, and the other USB devices on the same controller |
 | `camera-controls.txt` | Exposure, brightness, contrast, white balance and other camera controls (supported, auto, value, range) as reported when the camera was opened |
 | `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened |
-| `format-probe.txt` | Frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with the negotiated format and any error per row |
+| `format-probe.txt` | Frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with the negotiated format and any error per row, and a verdict read per row (healthy, all zero, MJPEG-only failure, intermittent start, erratic start) |
 | `media-foundation.txt` | Windows hardware-decoder switch (`HardwareMFT`), Frame Server service state, and every registered Media Foundation video decoder with name, identifier, DLL path and whether it is a Windows or vendor component |
 | `directshow.txt` | DirectShow core component registrations, software/virtual cameras registered as video input devices, filters whose DLL is missing or outside the Windows folder, the preferred MJPG decoder, the DoNotUse list and VFW `vidc.*` codec entries, for the 64-bit and 32-bit registry views |
 | `installed-software.txt` | Installed programs (name, version, publisher, install date) with camera/codec/tracking/security/cleaner-related entries listed first |
@@ -213,11 +213,11 @@ It contains:
 | `defender-status.txt` | Selected Microsoft Defender protection-status fields |
 | `camera-policy.txt` | Windows AppPrivacy camera policy values |
 | `camera-privacy.txt` | Camera consent values exposed by Windows |
-| `camera-access-history.txt` | Per-application camera access records with user profile names redacted |
+| `camera-access-history.txt` | Per-application camera access records with user profile names redacted; the summary names the most recent use before the run and any application that still held the camera while the tool ran |
 | `running-processes.txt` | System-wide running process names and process IDs only |
 | `potential-camera-apps.txt` | Running process names matching camera, tracking or virtual-camera review terms |
 | `camera-services.txt` | Camera-related Windows services and states |
-| `camera-event-logs.txt` | Recent entries from enabled Windows Camera/FrameServer event logs |
+| `camera-event-logs.txt` | Entries from enabled Windows Camera/FrameServer event logs, per log in two parts: up to 200 events from the 7 days before the tool started, then up to 100 events the run itself generated, so the run cannot push the customer's own failed attempt out of the window |
 | `application-camera-errors.txt` | Recent Application log warnings/errors matching camera or OpenTrack terms |
 | `power-usb.txt` | Active power scheme and USB power-policy output when available |
 | `usb-events.txt` | USB hub/controller, Kernel-PnP and power events from the System log (14 days): counts, warnings and errors, and the ones naming DelanCam1 |
@@ -283,6 +283,27 @@ as NV12. A vendor MJPEG decoder registered in Media Foundation (graphics
 drivers ship them) can silently deliver no frames at all, which then looks
 exactly like a dead camera in the stream test although Windows Camera still
 shows a picture. The probe separates those two cases.
+
+The verdict is read per row, not from the totals. "MJPEG decoding is broken"
+is claimed only when every MJPEG row is empty, every raw row delivered at
+least five frames and the stream test got no MJPEG frames either, because a
+broken decoder fails every time. When the stream test streamed MJPEG seconds
+earlier and the probe rows then came back empty, the verdict is "intermittent
+start"; when raw rows themselves are inconsistent (some stream, some deliver
+nothing or a single frame), it is "erratic start". Both point at the USB
+isochronous link, the cable or the camera, and the `Machine:` line lets the
+same probe on a second computer settle whether the fault follows the camera.
+Zero frames everywhere while another application still held the camera
+(visible in the access history as a start with no stop) is reported as such
+and not as a fault.
+
+Two registry flags are deliberately conservative. The vendor MJPEG decoder
+flag is `INFO` when this run actually decoded MJPEG frames, because every PC
+with that graphics driver has the decoder registered; it is `REVIEW HIGH` only
+when the probe shows the decoder's signature. A missing VFW `vidc.*` entry
+counts only when Windows ships the codec DLL in the matching system folder;
+entries whose DLL this build does not ship (64-bit `vidc.cvid`, `iccvid.dll`,
+on Windows 11) are listed as normal.
 
 The camera-control readout uses the same Windows Runtime session as the stream
 test (`VideoDeviceController`) and keeps numbers only. It exists because a
