@@ -22,7 +22,7 @@ The tool checks and, in apply mode, repairs:
 
 | Area | What it checks | What apply mode does |
 | --- | --- | --- |
-| A | A vendor (NVIDIA, AMD, Intel) hardware MJPEG decoder registered in Media Foundation while the `HardwareMFT` switch leaves hardware decoders enabled; confirmed by a per-format probe that opens DelanCam1 in MJPG, NV12 and YUY2 | Sets `EnableDecoders = 0` under `HKLM\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT` and stops the Frame Server service so the change takes effect, then probes MJPG again |
+| A | A vendor (NVIDIA, AMD, Intel) hardware MJPEG decoder registered in Media Foundation while the `HardwareMFT` switch leaves hardware decoders enabled; confirmed by a per-format probe that opens DelanCam1 in MJPG, NV12 and YUY2. The repair is offered only when every MJPG format gives nothing while every raw format streams (at least 5 frames in 2 seconds); a camera that also stalls in a raw format is reported as erratic and left alone, because the decoder cannot be what stops it | Sets `EnableDecoders = 0` under `HKLM\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT` and stops the Frame Server service so the change takes effect, then probes MJPG again |
 | B | The nine stock `vidc.*` entries in `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Drivers32` (64-bit) and the same key under `WOW6432Node` (32-bit) | Re-adds the missing entries, only when the codec DLL exists in `System32` or `SysWOW64`. Entries that point at an existing non-stock DLL are reported and left alone. A legacy codec whose DLL is not shipped by that Windows version at all (Windows 11 has no 64-bit `iccvid.dll`) is logged, not flagged; only a missing `msyuv.dll` or `iyuv_32.dll` is reported as damage |
 | C | Entries in the DirectShow "Video Input Devices" and "DirectShow Filters" categories whose DLL no longer exists or which have no `InprocServer32` at all (ghost virtual cameras, dead codec-pack filters), plus the registration of the DirectShow core components | Deletes the dead `Instance` entry and its `CLSID` key, then clears every logged-on user's `ActiveMovie\devenum` cache and re-registers `quartz.dll`, `qcap.dll`, `qedit.dll`, `qdv.dll`, `devenum.dll` and `ksproxy.ax` with `regsvr32 /s` in both views. Virtual cameras whose DLL still exists are listed and never removed |
 | D | `HKLM\SOFTWARE\Microsoft\DirectShow\Preferred` (the MJPG entry must point at the Windows MJPEG Decompressor; other entries must point at decoders that exist), the `DoNotUse` list and `TreatAs` redirections on core filters, in both views | Restores the MJPG entry, deletes dangling `Preferred` values, clears `DoNotUse` values and removes `TreatAs` keys |
@@ -116,7 +116,11 @@ privacy settings, make network connections, send telemetry, upload anything or
 download code.
 
 The camera probe briefly opens DelanCam1 with Windows's own camera API and
-keeps only frame counts per format. No frame content is saved.
+keeps only frame counts per format. No frame content is saved. When the first
+pass does not show MJPEG working, the probe runs a second pass after a one
+second pause and keeps the better count per format, so a camera that starts
+only now and then is not mistaken for a decoder problem; both counts go to the
+log.
 
 The only writes it performs are the registry changes listed under Purpose, the
 `regsvr32 /s` re-registration of six Windows DirectShow components, stopping
