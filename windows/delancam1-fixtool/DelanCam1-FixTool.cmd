@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "DELAN_VERSION=1.1.1"
+set "DELAN_VERSION=1.2.0"
 title Delanclip DelanCam1 Fix Tool v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 set "DELAN_MODE=check"
@@ -458,11 +458,12 @@ function Request-DelayedRestart {
 
 # ------------------------------------------------------------ camera probe
 
-function Invoke-FormatProbe {
+function Invoke-ProbePass {
     # Opens DelanCam1 through the Windows Runtime camera API (Media Foundation
     # / Frame Server) once per format and counts frames for two seconds each.
     # Nothing is saved from the frames; only counts are kept.
-    $result = [pscustomobject]@{ Performed = $false; Skipped = ''; Error = ''; Rows = @(); MjpgFrames = 0; RawFrames = 0; MjpgRows = 0 }
+    param([int]$PassNumber = 1)
+    $result = [pscustomobject]@{ Performed = $false; Skipped = ''; Error = ''; Rows = @(); MjpgFrames = 0; RawFrames = 0; MjpgRows = 0; Passes = 1; Pass = $PassNumber }
     if ($skipProbe) { $result.Skipped = 'skipped by the /skipprobe switch'; return $result }
 
     function Wait-WinRtOperation {
@@ -626,13 +627,66 @@ function Invoke-FormatProbe {
     return $result
 }
 
+function Invoke-FormatProbe {
+    # Runs the per-format pass and, when it does not show MJPEG working, runs
+    # it a second time after a short pause. A camera that starts only now and
+    # then can give zero frames in one pass and a steady stream in the next,
+    # which would otherwise look like a decoder problem. Each format keeps the
+    # better of its two counts; both counts go to the log.
+    $first = Invoke-ProbePass 1
+    if (-not $first.Performed) { return $first }
+    if ((Get-ProbeVerdict $first) -eq 'healthy') { return $first }
+    Start-Sleep -Seconds 1
+    $second = Invoke-ProbePass 2
+    if (-not $second.Performed) {
+        $note = $second.Skipped
+        if (-not $note) { $note = $second.Error }
+        if ($first.Error) { $first.Error = 'second pass could not run: ' + $note + '; ' + $first.Error }
+        else { $first.Error = 'second pass could not run: ' + $note }
+        return $first
+    }
+    $merged = [pscustomobject]@{ Performed = $true; Skipped = ''; Error = ''; Rows = @(); MjpgFrames = 0; RawFrames = 0; MjpgRows = 0; Passes = 2 }
+    $rows = @()
+    foreach ($row1 in $first.Rows) {
+        $row2 = $second.Rows | Where-Object { $_.Requested -eq $row1.Requested } | Select-Object -First 1
+        $best = $row1
+        if ($row2 -and $row2.Frames -gt $row1.Frames) { $best = $row2 }
+        $attempted = [bool]$row1.Attempted
+        $pass2 = 0
+        if ($row2) { $pass2 = $row2.Frames; if ($row2.Attempted) { $attempted = $true } }
+        $rows += [pscustomobject]@{ Requested = $best.Requested; Negotiated = $best.Negotiated; Start = $best.Start; Frames = $best.Frames; Error = $best.Error; Attempted = $attempted; Pass1 = $row1.Frames; Pass2 = $pass2 }
+        if (-not $attempted) { continue }
+        if ($best.Requested -like 'MJPG*') { $merged.MjpgFrames += $best.Frames; $merged.MjpgRows++ } else { $merged.RawFrames += $best.Frames }
+    }
+    $merged.Rows = $rows
+    $merged.Error = (@($first.Error, $second.Error) | Where-Object { $_ }) -join '; '
+    return $merged
+}
+
 function Get-ProbeVerdict {
-    # 'broken' (MJPEG dead, raw alive), 'healthy', 'dead' (nothing), 'none' (no probe)
+    # 'healthy'  MJPEG streams: at least one MJPG format gave 5 frames or more
+    # 'broken'   every MJPG format gave nothing while every raw format streamed,
+    #            so MJPEG decoding inside Windows is what fails
+    # 'erratic'  frames stop or never start in a raw format too, so the camera,
+    #            its cable, the USB port or another program is the problem
+    # 'dead'     nothing in any format
+    # 'none'     no probe
     param($Probe)
     if (-not $Probe.Performed) { return 'none' }
-    if ($Probe.MjpgRows -gt 0 -and $Probe.MjpgFrames -eq 0 -and $Probe.RawFrames -gt 0) { return 'broken' }
-    if ($Probe.MjpgFrames -eq 0 -and $Probe.RawFrames -eq 0) { return 'dead' }
-    return 'healthy'
+    $rows = @($Probe.Rows | Where-Object { $_.Attempted })
+    if ($rows.Count -eq 0) { return 'none' }
+    $steady = 5
+    $mjpg = @($rows | Where-Object { $_.Requested -like 'MJPG*' })
+    $raw = @($rows | Where-Object { $_.Requested -notlike 'MJPG*' })
+    $total = 0
+    foreach ($r in $rows) { $total += $r.Frames }
+    if ($total -eq 0) { return 'dead' }
+    if (@($mjpg | Where-Object { $_.Frames -ge $steady }).Count -gt 0) { return 'healthy' }
+    $rawSteady = ($raw.Count -gt 0 -and @($raw | Where-Object { $_.Frames -lt $steady }).Count -eq 0)
+    if ($mjpg.Count -eq 0) { if ($rawSteady) { return 'healthy' } else { return 'erratic' } }
+    $mjpgSilent = (@($mjpg | Where-Object { $_.Frames -gt 0 }).Count -eq 0)
+    if ($mjpgSilent -and $rawSteady) { return 'broken' }
+    return 'erratic'
 }
 
 function Get-ProbeSentence {
@@ -645,17 +699,22 @@ function Get-ProbeSentence {
     switch (Get-ProbeVerdict $Probe) {
         'broken' { return 'MJPEG gives no picture, other formats work' }
         'dead' { return 'no picture in any format (USB, cable or driver, not something this tool repairs)' }
+        'erratic' { return 'the picture starts only now and then, in every format (camera, cable, USB port or another program, not something this tool repairs)' }
         default { return 'all formats deliver a picture' }
     }
 }
 
 function Write-ProbeLog {
     param($Probe, [string]$Title)
-    Write-ToolLog ('  Camera probe (' + $Title + '): opens DelanCam1 per format for 2 seconds and counts frames')
+    $twoPasses = ($Probe.PSObject.Properties['Passes'] -and $Probe.Passes -eq 2)
+    $passNote = ''
+    if ($twoPasses) { $passNote = '; two passes, because the first did not show MJPEG working; the better count per format is used' }
+    Write-ToolLog ('  Camera probe (' + $Title + '): opens DelanCam1 per format for 2 seconds and counts frames' + $passNote)
     if ($Probe.Skipped) { Write-ToolLog ('    ' + $Probe.Skipped); return }
     if (-not $Probe.Performed) { Write-ToolLog ('    probe could not run: ' + $Probe.Error); return }
     foreach ($row in $Probe.Rows) {
         $extra = ''
+        if ($twoPasses) { $extra += '  (pass 1: ' + $row.Pass1 + ', pass 2: ' + $row.Pass2 + ')' }
         if ($row.Negotiated -and $row.Negotiated -ne $row.Requested) { $extra += '  negotiated ' + $row.Negotiated }
         if ($row.Start -and $row.Start -ne 'Success') { $extra += '  start=' + $row.Start }
         if ($row.Error) { $extra += '  ' + $row.Error }
@@ -718,7 +777,7 @@ function Test-MediaFoundation {
 
     $reason = ''
     if ($mjpgBroken) { $reason = 'the probe shows MJPEG delivering 0 frames while raw formats stream' }
-    elseif ($vendorMjpeg.Count -gt 0 -and -not $mjpgHealthy) { $reason = 'a vendor MJPEG decoder is registered and the probe could not confirm MJPEG works' }
+    elseif ($vendorMjpeg.Count -gt 0 -and $verdict -eq 'none') { $reason = 'a vendor MJPEG decoder is registered and the probe could not confirm MJPEG works' }
 
     if ($reason) {
         $plan = @(
@@ -738,8 +797,11 @@ function Test-MediaFoundation {
             $script:AppliedAreas['A'] = $true
         } @{} -Human $human -Fix 'Tell Windows to use its own MJPEG decoder instead (one setting, fully reversible).'
     }
-    elseif ($vendorMjpeg.Count -gt 0) {
+    elseif ($vendorMjpeg.Count -gt 0 -and $mjpgHealthy) {
         Add-Finding 'A' 'INFO' 'A vendor MJPEG decoder is registered but the probe shows MJPEG streaming normally. Left as is.'
+    }
+    elseif ($vendorMjpeg.Count -gt 0) {
+        Add-Finding 'A' 'INFO' ('A vendor MJPEG decoder is registered, but the probe verdict is "' + $verdict + '": frames stop or never start in raw formats too, so the decoder is not what blocks the camera. Left as is.')
     }
     else {
         Add-Finding 'A' 'INFO' 'No vendor MJPEG decoder registered; hardware decoders stay enabled.'
@@ -1258,7 +1320,7 @@ try {
 
     # ---- check -------------------------------------------------------------
     Write-Host ''
-    Write-Host 'Checking your Windows video setup (about 15 seconds)...'
+    Write-Host 'Checking your Windows video setup (15 to 30 seconds)...'
     Invoke-Detection 'before'
     $screen = Get-ScreenFindings
     $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
@@ -1277,6 +1339,9 @@ try {
         Write-Screen 'RESULT: everything this tool checks is in order. Nothing to repair.' 'Green'
         if ($verdict -eq 'dead') {
             Write-Screen 'The camera gave no picture in any format. That points to USB, cable or driver, which this tool does not repair.'
+        }
+        elseif ($verdict -eq 'erratic') {
+            Write-Screen 'The camera gave a picture only now and then, in every format, even on a second try. That points to the camera, its cable or the USB port, or to another program grabbing the camera, which this tool does not repair.'
         }
         Write-Screen 'If OpenTrack still cannot open DelanCam1, run the DelanCam1 Diagnostics tool and send its report to Delanclip Support.'
         Write-Screen ('The details of this check were saved to: ' + $script:LogPath)

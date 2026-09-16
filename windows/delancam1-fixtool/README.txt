@@ -4,7 +4,7 @@ PURPOSE
 This tool checks the Windows video pipeline that OpenTrack, AITrack and similar camera software depend on, and repairs the known damage that stops them from opening DelanCam1 while the Windows Camera app still shows a picture. Run it only when Delanclip Support asks for it, after they have read your DelanCam1 Diagnostics report.
 
 It checks and can repair:
-A. a vendor hardware MJPEG decoder (NVIDIA, AMD, Intel) intercepting Media Foundation - repair: EnableDecoders=0 in HKLM\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT, Frame Server service restarted
+A. a vendor hardware MJPEG decoder (NVIDIA, AMD, Intel) intercepting Media Foundation - repair: EnableDecoders=0 in HKLM\SOFTWARE\Microsoft\Windows Media Foundation\HardwareMFT, Frame Server service restarted. Offered only when every MJPG format gives nothing while every raw format streams; a camera that also stalls in a raw format is reported as erratic (camera, cable, USB port or another program) and left alone
 B. missing 64-bit or 32-bit VFW codec entries (Drivers32 vidc.*) - repair: the stock entries are re-added when the codec DLL exists in Windows; a legacy codec that this Windows version does not ship at all is only logged
 C. dead DirectShow registrations: ghost virtual cameras and filters whose DLL no longer exists - repair: the dead entries are deleted, the per-user DirectShow device cache is cleared and the Windows DirectShow core is re-registered with regsvr32
 D. DirectShow decoder preferences pointing at removed codecs (Preferred, DoNotUse, TreatAs) - repair: stock values restored, dangling values deleted
@@ -36,7 +36,7 @@ The tool does not collect camera images or video, personal documents, photos, em
 
 It does not delete files, install software, replace drivers, alter camera privacy settings, make network connections, send telemetry, upload anything or download code.
 
-The camera probe briefly opens DelanCam1 with Windows's own camera API and keeps only frame counts per format.
+The camera probe briefly opens DelanCam1 with Windows's own camera API and keeps only frame counts per format. When the first pass does not show MJPEG working, it runs a second pass after a one second pause and keeps the better count per format; both counts go to the log.
 
 The only writes it performs are the registry changes listed above, the regsvr32 re-registration of six Windows DirectShow components, stopping the Frame Server service (it restarts on demand) and, if it was disabled, setting that service back to Manual. Every registry change is preceded by an export to the backup folder.
 
