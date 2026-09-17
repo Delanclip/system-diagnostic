@@ -102,7 +102,7 @@ DirectShow filters or ghost virtual cameras, a preferred MJPG decoder that is
 not the Windows default) describes damage this tool only reports. The
 companion [DelanCam1 Fix Tool](../delancam1-fixtool/) repairs exactly those
 findings: it checks first, lists the changes, applies them only after the
-customer types `APPLY`, and exports a backup with an undo script before the
+customer presses `Y`, and exports a backup with an undo script before the
 first change. Delanclip Support sends it after reading the report; the order
 is check, apply, restart, then this diagnostic tool once more.
 
