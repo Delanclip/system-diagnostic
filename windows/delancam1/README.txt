@@ -1,5 +1,5 @@
 Delanclip DelanCam1 Diagnostics
-Version 1.4.2
+Version 1.4.3
 
 The version number is shown in the title bar and the banner of the tool window and is written into every report (SUMMARY.txt and README.txt inside the ZIP).
 
@@ -36,7 +36,7 @@ If SUMMARY.txt shows REVIEW HIGH lines under WINDOWS VIDEO PIPELINE (MJPEG deliv
 
 OUTPUT
 The report ZIP contains:
-- SUMMARY.txt - short diagnostic result and review flags
+- SUMMARY.txt - short diagnostic result and review flags, including a NEXT STEP section when the camera is in a failed state (power-cycle the camera before any port test) or dies after its first stop
 - README.txt - what was collected and privacy limits
 - windows.txt - Windows version/build, installation date, computer name, model, mainboard, masked BIOS serial and machine fingerprint
 - camera-devices.txt - present camera-class devices, hardware IDs and bus descriptions
@@ -45,9 +45,10 @@ The report ZIP contains:
 - delancam-pnp.txt - Device Manager/PnP status and error code
 - usb-path.txt - USB parent chain and location paths
 - usb-topology.txt - host controller, hub(s) between DelanCam1 and the root hub, other USB devices on the same controller
+- usb-port-map.txt - every present USB device grouped by host controller and hub chain, with a single suggested port move for DelanCam1 when it sits behind a hub and another device has a direct port
 - camera-controls.txt - exposure, brightness, contrast, white balance and other camera controls (supported, auto, value, range)
 - stream-test.txt - result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS, the settings head tracking uses, when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened
-- format-probe.txt - frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with a verdict read per row: healthy, all zero, MJPEG-only failure (every MJPEG row empty, every raw row streaming, no MJPEG frames in the stream test either), intermittent start (MJPEG streamed in the stream test but not in the probe) or erratic start (rows inconsistent)
+- format-probe.txt - frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with a verdict read per row: healthy, all zero, MJPEG-only failure (every MJPEG row empty, every raw row streaming, no MJPEG frames in the stream test either), intermittent start (MJPEG streamed in the stream test but not in the probe) or erratic start (rows inconsistent); then three re-open cycles in the stream test format with a stop between each, read as stable, dies after stop (streamed after power-up, one frame or nothing after the first stop), failed state (one frame or nothing from the first open) or erratic
 - media-foundation.txt - Windows hardware-decoder switch, Frame Server state and every registered Media Foundation video decoder (name, identifier, DLL path, Windows or vendor)
 - directshow.txt - DirectShow core components, software/virtual cameras, filters with missing files or third-party locations, preferred MJPG decoder, DoNotUse list and VFW codec entries (64-bit and 32-bit views)
 - installed-software.txt - installed programs (name, version, publisher, install date), camera/codec/tracking/security/cleaner-related entries first

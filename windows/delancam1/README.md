@@ -1,6 +1,6 @@
 # DelanCam1 Diagnostic Tool (Windows)
 
-Current version: **1.4.2**. The version number is shown in the title bar and
+Current version: **1.4.3**. The version number is shown in the title bar and
 the banner of the tool window and is written into every report (`SUMMARY.txt`
 and `README.txt` inside the ZIP), so a report can always be matched to the
 version that produced it.
@@ -201,9 +201,10 @@ It contains:
 | `delancam-pnp.txt` | Device Manager/PnP status, service and `ConfigManagerErrorCode` |
 | `usb-path.txt` | DelanCam1 parent-device chain and USB location paths |
 | `usb-topology.txt` | Host controller, hub(s) between DelanCam1 and the root hub, and the other USB devices on the same controller |
+| `usb-port-map.txt` | Every present USB device grouped by host controller and hub chain (`direct` or `via <hub>`), with one suggested port move for DelanCam1 when it sits behind a hub and another device, preferably keyboard or mouse, has a direct port |
 | `camera-controls.txt` | Exposure, brightness, contrast, white balance and other camera controls (supported, auto, value, range) as reported when the camera was opened |
 | `stream-test.txt` | Result of briefly opening DelanCam1 and reading live frames: whether it opened, negotiated format (the test requests 640x480 @ 60 FPS when available), frame count, measured FPS, zero-length frames, timestamp errors, stream stalls, frozen-frame checksum results and basic brightness statistics, or the exact Windows error if it could not be opened |
-| `format-probe.txt` | Frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with the negotiated format and any error per row, and a verdict read per row (healthy, all zero, MJPEG-only failure, intermittent start, erratic start) |
+| `format-probe.txt` | Frames received in two seconds for each of MJPG 640x480 @ 60 and 30, NV12 640x480 @ 60 and 30 and YUY2 640x480 @ 30, with the negotiated format and any error per row, a verdict read per row (healthy, all zero, MJPEG-only failure, intermittent start, erratic start), and three re-open cycles in MJPG 640x480 @ 60 with a stop between each, read as stable, dies after stop, failed state or erratic |
 | `media-foundation.txt` | Windows hardware-decoder switch (`HardwareMFT`), Frame Server service state, and every registered Media Foundation video decoder with name, identifier, DLL path and whether it is a Windows or vendor component |
 | `directshow.txt` | DirectShow core component registrations, software/virtual cameras registered as video input devices, filters whose DLL is missing or outside the Windows folder, the preferred MJPG decoder, the DoNotUse list and VFW `vidc.*` codec entries, for the 64-bit and 32-bit registry views |
 | `installed-software.txt` | Installed programs (name, version, publisher, install date) with camera/codec/tracking/security/cleaner-related entries listed first |
@@ -296,6 +297,25 @@ same probe on a second computer settle whether the fault follows the camera.
 Zero frames everywhere while another application still held the camera
 (visible in the access history as a start with no stop) is reported as such
 and not as a fault.
+
+After the five probe rows the tool opens the camera three more times in the
+stream test format, with a stop between each, and counts frames per cycle. The
+stream test is cycle zero. A healthy camera streams in every cycle. "Dies
+after stop" means the camera streamed after power-up and delivered one frame
+or nothing in every cycle after the first stop; that is the camera's firmware
+or sensor, and a second computer shows the same once the camera has been
+stopped once. "Failed state" means one frame or nothing from the very first
+open, so the camera was already broken before the tool started. In that state
+the summary adds a NEXT STEP section: port and software tests prove nothing
+until the camera has been unplugged for ten minutes with the PC left on,
+because a Windows restart does not cut USB power and the camera keeps its bad
+state through it.
+
+The USB port map lists every present USB device by host controller and hub
+chain. When DelanCam1 sits behind a hub and another device, preferably the
+keyboard or mouse, sits on a direct root-hub port, the summary proposes one
+swap instead of a tour of every port. The map cannot name physical ports, but
+the customer knows where the keyboard is plugged in.
 
 Two registry flags are deliberately conservative. The vendor MJPEG decoder
 flag is `INFO` when this run actually decoded MJPEG frames, because every PC
