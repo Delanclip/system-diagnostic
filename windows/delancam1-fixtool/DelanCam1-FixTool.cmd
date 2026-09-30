@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "DELAN_VERSION=1.2.0"
+set "DELAN_VERSION=1.2.1"
 title Delanclip DelanCam1 Fix Tool v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 set "DELAN_MODE=check"
@@ -1342,6 +1342,9 @@ try {
         }
         elseif ($verdict -eq 'erratic') {
             Write-Screen 'The camera gave a picture only now and then, in every format, even on a second try. That points to the camera, its cable or the USB port, or to another program grabbing the camera, which this tool does not repair.'
+        }
+        if ($verdict -eq 'dead' -or $verdict -eq 'erratic') {
+            Write-Screen 'Before testing other USB ports: unplug the camera for 10 minutes with the PC left on (a restart does not cut USB power), plug it back in and run this check again. A camera that then streams once and fails again after the first stop is a camera fault, not this PC.'
         }
         Write-Screen 'If OpenTrack still cannot open DelanCam1, run the DelanCam1 Diagnostics tool and send its report to Delanclip Support.'
         Write-Screen ('The details of this check were saved to: ' + $script:LogPath)

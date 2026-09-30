@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "DELAN_VERSION=1.4.2"
+set "DELAN_VERSION=1.4.3"
 title Delanclip DelanCam1 Diagnostics v%DELAN_VERSION%
 set "DELAN_SCRIPT=%~f0"
 
@@ -210,6 +210,11 @@ Collected:
   opened (numbers only)
 - the USB path DelanCam1 is connected through: host controller, any hub in
   between and the other USB devices sharing that controller
+- a USB port map: every present USB device grouped by host controller and
+  hub chain, so a camera behind a hub can be moved once to a known direct port
+- three re-open cycles after the format probe (same format, stop between
+  each) to tell a camera that dies after its first stop from one that
+  restarts cleanly; only frame counts are kept
 - USB and Plug and Play warnings and errors from the System event log
 - kernel filter drivers attached to the camera device classes and to
   DelanCam1, with file paths and signers
@@ -480,6 +485,95 @@ Run-Step 'DelanCam1 USB path' {
     $topo | Set-Content -LiteralPath $topoPath -Encoding UTF8
 }
 
+$script:usbPortMapSummary = @()
+Run-Step 'USB port map' {
+    $path = Join-Path $work 'usb-port-map.txt'
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('USB port map')
+    $out.Add('')
+    $out.Add('Every present USB device grouped by host controller, with the hub chain between the device and the root hub.')
+    $out.Add('"direct" means the device sits on a root-hub port with no hub in between; on desktop boards those are usually')
+    $out.Add('the ports wired to the CPU. A camera moved to the port that a direct device uses today gets the same clean path,')
+    $out.Add('so one targeted swap replaces trying every port in turn.')
+    $out.Add('')
+
+    $parentCache = @{}
+    $nameCache = @{}
+    $devices = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -match '(?i)^USB\\VID_' -and $_.InstanceId -notmatch '(?i)&MI_[0-9A-F][0-9A-F]' })
+    $entries = @()
+    foreach ($d in $devices) {
+        $hubs = @()
+        $controllerName = ''
+        $controllerId = ''
+        $current = [string]$d.InstanceId
+        $seen = @{}
+        for ($depth = 0; $depth -lt 12; $depth++) {
+            if ([string]::IsNullOrWhiteSpace($current) -or $seen.ContainsKey($current)) { break }
+            $seen[$current] = $true
+            if (-not $parentCache.ContainsKey($current)) { $parentCache[$current] = [string](Get-DevicePropertyData -InstanceId $current -KeyName 'DEVPKEY_Device_Parent') }
+            $parent = [string]$parentCache[$current]
+            if ([string]::IsNullOrWhiteSpace($parent)) { break }
+            if (-not $nameCache.ContainsKey($parent)) {
+                $pn = $parent
+                try { $pn = [string](Get-PnpDevice -InstanceId $parent -ErrorAction Stop).FriendlyName } catch {}
+                if ([string]::IsNullOrWhiteSpace($pn)) { $pn = $parent }
+                $nameCache[$parent] = $pn
+            }
+            if ($parent -match '(?i)^USB\\VID_') { $hubs += [string]$nameCache[$parent] }
+            elseif ($parent -match '(?i)^PCI\\') { $controllerName = [string]$nameCache[$parent]; $controllerId = $parent; break }
+            $current = $parent
+        }
+        $busDesc = [string](Get-DevicePropertyData -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_BusReportedDeviceDesc')
+        $label = [string]$d.FriendlyName
+        if ($busDesc -and $busDesc -ne $label) { $label = "$label ($busDesc)" }
+        $entries += [PSCustomObject]@{
+            Label = $label
+            Id = [string]$d.InstanceId
+            Controller = $controllerName
+            ControllerId = $controllerId
+            Hubs = @($hubs)
+            HubCount = @($hubs).Count
+            IsHub = ([string]$d.FriendlyName -match '(?i)\bhub\b')
+            IsDelan = ([string]$d.InstanceId -match '(?i)VID_0120&PID_1234')
+        }
+    }
+
+    foreach ($g in ($entries | Group-Object ControllerId)) {
+        $cname = [string](($g.Group | Select-Object -First 1).Controller)
+        if (-not $cname) { $cname = 'unknown controller' }
+        $out.Add("===== $cname =====")
+        if ($g.Name) { $out.Add("  [$($g.Name)]") }
+        foreach ($e in ($g.Group | Sort-Object HubCount, Label)) {
+            $pathText = if ($e.HubCount -eq 0) { 'direct' } else { 'via ' + ($e.Hubs -join ' > ') }
+            $mark = if ($e.IsDelan) { '   <== DelanCam1' } else { '' }
+            $out.Add(('  - {0}: {1}{2}' -f $e.Label, $pathText, $mark))
+        }
+        $out.Add('')
+    }
+
+    $delan = $entries | Where-Object { $_.IsDelan } | Select-Object -First 1
+    $directOthers = @($entries | Where-Object { -not $_.IsDelan -and -not $_.IsHub -and $_.HubCount -eq 0 })
+    $inputPattern = '(?i)keyboard|mouse|input|clavier|souris|tastatur|maus|teclado|raton|klawiatur|mysz'
+    $preferred = @($directOthers | Where-Object { $_.Label -match $inputPattern }) + @($directOthers | Where-Object { $_.Label -notmatch $inputPattern })
+    $advice = ''
+    if ($delan) {
+        if ($delan.HubCount -eq 0) {
+            $advice = 'USB port map: DelanCam1 already sits on a direct root-hub port, so moving it for the sake of a cleaner USB path is not needed. See usb-port-map.txt.'
+        }
+        elseif ($preferred.Count -gt 0) {
+            $advice = 'USB port map: DelanCam1 goes through a hub, while ' + $preferred[0].Label + ' sits on a direct port. One targeted move instead of trying every port: swap DelanCam1 into the port that device uses now, and that device into the camera port. See usb-port-map.txt.'
+        }
+        else {
+            $advice = 'USB port map: every present USB device on this PC goes through a hub, so no port is known to be direct. See usb-port-map.txt.'
+        }
+    }
+    else {
+        $advice = 'USB port map: DelanCam1 is not present, so no move can be suggested. See usb-port-map.txt for the ports the other devices use.'
+    }
+    $out.Add($advice)
+    $script:usbPortMapSummary += $advice
+    $out | Set-Content -LiteralPath $path -Encoding UTF8
+}
 $script:cameraControlsRead = $false
 $script:cameraControls = @()
 $script:exposureManual = $false
@@ -1050,6 +1144,9 @@ $script:formatProbeRows = 0
 $script:formatProbeRowResults = @()
 $script:formatProbeVerdict = 'not-run'
 $script:formatProbeRowText = ''
+$script:reopenCycleFrames = @()
+$script:reopenVerdict = 'not-run'
+$script:reopenText = ''
 Run-Step 'DelanCam1 format probe' {
     $path = Join-Path $work 'format-probe.txt'
     $lines = New-Object System.Collections.Generic.List[string]
@@ -1134,6 +1231,11 @@ Run-Step 'DelanCam1 format probe' {
 
     $probeSeconds = 2
     $wanted = @('MJPG 640x480@60', 'NV12 640x480@60', 'MJPG 640x480@30', 'NV12 640x480@30', 'YUY2 640x480@30')
+    $reopenFormat = 'MJPG 640x480@60'
+    $reopenCount = 3
+    $plan = @()
+    foreach ($w in $wanted) { $plan += [PSCustomObject]@{ Format = $w; Tag = '' } }
+    for ($ci = 1; $ci -le $reopenCount; $ci++) { $plan += [PSCustomObject]@{ Format = $reopenFormat; Tag = "re-open $ci" } }
     $vidPidPattern = '(?i)VID_0120.*PID_1234'
 
     try {
@@ -1170,7 +1272,15 @@ Run-Step 'DelanCam1 format probe' {
         $lines.Add(('{0,-18} {1,-18} {2,-8} {3,-8} {4,6} {5,8}  {6}' -f 'Requested', 'Negotiated', 'SetFmt', 'Start', 'Frames', 'FirstMs', 'Error'))
         $lines.Add(('-' * 96))
 
-        foreach ($want in $wanted) {
+        foreach ($item in $plan) {
+            $want = [string]$item.Format
+            $tag = [string]$item.Tag
+            if ($tag -eq 're-open 1') {
+                $lines.Add('')
+                $lines.Add("Re-open cycles: $reopenFormat opened $reopenCount more times with a stop between each, $probeSeconds s each.")
+                $lines.Add('A healthy camera streams in every cycle. A camera that streamed in the stream test and now delivers one')
+                $lines.Add('frame or nothing loses its stream after the first stop; only a power cut restores it.')
+            }
             $fmt = $supported | Where-Object { (Get-ProbeLabel $_) -eq $want } | Select-Object -First 1
             if (-not $fmt) {
                 $lines.Add(('{0,-18} {1}' -f $want, 'not offered by this device'))
@@ -1224,10 +1334,15 @@ Run-Step 'DelanCam1 format probe' {
                 if ($reader) { try { Wait-WinRtAction ($reader.StopAsync()) 5000 } catch {}; try { $reader.Dispose() } catch {} }
                 if ($mc) { try { $mc.Dispose() } catch {} }
             }
-            $lines.Add(('{0,-18} {1,-18} {2,-8} {3,-8} {4,6} {5,8}  {6}' -f $want, $row.Negotiated, $row.SetFmt, $row.Start, $row.Frames, $row.FirstMs, $row.Error))
-            $script:formatProbeRows++
-            if ($want -like 'MJPG*') { $script:formatProbeMjpgFrames += $row.Frames } else { $script:formatProbeRawFrames += $row.Frames }
-            $script:formatProbeRowResults += [PSCustomObject]@{ Format = $want; Kind = $(if ($want -like 'MJPG*') { 'MJPG' } else { 'RAW' }); Frames = [int]$row.Frames; Error = [string]$row.Error }
+            $lines.Add(('{0,-18} {1,-18} {2,-8} {3,-8} {4,6} {5,8}  {6}' -f $(if ($tag) { $tag } else { $want }), $row.Negotiated, $row.SetFmt, $row.Start, $row.Frames, $row.FirstMs, $row.Error))
+            if ($tag) {
+                $script:reopenCycleFrames += [int]$row.Frames
+            }
+            else {
+                $script:formatProbeRows++
+                if ($want -like 'MJPG*') { $script:formatProbeMjpgFrames += $row.Frames } else { $script:formatProbeRawFrames += $row.Frames }
+                $script:formatProbeRowResults += [PSCustomObject]@{ Format = $want; Kind = $(if ($want -like 'MJPG*') { 'MJPG' } else { 'RAW' }); Frames = [int]$row.Frames; Error = [string]$row.Error }
+            }
             Start-Sleep -Milliseconds 300
         }
 
@@ -1288,6 +1403,38 @@ Run-Step 'DelanCam1 format probe' {
             }
             default {
                 $lines.Add('Reading: no format could be probed. See the rows above.')
+            }
+        }
+
+        # Re-open cycles: does the camera restart its stream after a stop? The stream test is cycle 0.
+        $streamCycleFrames = -1
+        if ($script:streamTestOpened -and $script:streamTestSubtype -match '(?i)MJPG') { $streamCycleFrames = [int]$script:streamTestFramesReceived }
+        if ($script:reopenCycleFrames.Count -gt 0) {
+            $cyclesHealthy = @($script:reopenCycleFrames | Where-Object { $_ -ge $healthyRowFrames }).Count
+            $script:reopenText = 'stream test ' + $(if ($streamCycleFrames -ge 0) { [string]$streamCycleFrames } else { 'n/a' }) + ', then ' + ($script:reopenCycleFrames -join ', ')
+            if ($cyclesHealthy -eq $script:reopenCycleFrames.Count) { $script:reopenVerdict = 'stable' }
+            elseif ($cyclesHealthy -eq 0 -and $streamCycleFrames -ge $healthyRowFrames) { $script:reopenVerdict = 'dies-after-stop' }
+            elseif ($cyclesHealthy -eq 0) { $script:reopenVerdict = 'dead-state' }
+            else { $script:reopenVerdict = 'erratic' }
+            $lines.Add('')
+            $lines.Add("Re-open cycles ($reopenFormat): $script:reopenText")
+            switch ($script:reopenVerdict) {
+                'stable' {
+                    $lines.Add('Reading: the camera restarts its stream cleanly after every stop.')
+                }
+                'dies-after-stop' {
+                    $lines.Add('Reading: the camera streamed after power-up and lost its stream after the first stop; every re-open since')
+                    $lines.Add('delivers one frame or nothing. That is the camera (firmware or sensor), not this PC. A power cut (unplug')
+                    $lines.Add('for 10 minutes) restores it until the next stop.')
+                }
+                'dead-state' {
+                    $lines.Add('Reading: the camera was already in its failed state when this tool started: one frame or nothing in the')
+                    $lines.Add('stream test and in every cycle. Port tests in this state prove nothing. Unplug the camera for 10 minutes')
+                    $lines.Add('with the PC left on, plug it back in and run this tool again from a fresh start.')
+                }
+                default {
+                    $lines.Add('Reading: the re-open cycles are inconsistent; some restarts stream and some do not. USB link, cable or camera.')
+                }
             }
         }
     }
@@ -2274,6 +2421,32 @@ Run-Step 'Diagnostic summary' {
                 $summary.Add('The probe produced no per-format rows. See format-probe.txt.')
             }
         }
+        if ($script:reopenVerdict -ne 'not-run') {
+            $summary.Add("Re-open cycles (MJPG 640x480@60, stop between each): $script:reopenText.")
+            switch ($script:reopenVerdict) {
+                'stable' { $summary.Add('The camera restarts its stream cleanly after every stop.') }
+                'dies-after-stop' { $summary.Add("REVIEW HIGH: Dies after stop. The camera streamed after power-up ($script:streamTestFramesReceived frames in the stream test) and every re-open since delivers one frame or nothing. This is the camera (firmware or sensor), not this PC: a second computer shows the same once the camera has been stopped once. A power cut (unplug for 10 minutes) restores it until the next stop.") }
+                'dead-state' { $summary.Add('REVIEW HIGH: Failed state. The camera delivered one frame or nothing in the stream test and in every re-open cycle, so it was already in its failed state before this tool started. See NEXT STEP below.') }
+                default { $summary.Add('REVIEW: The re-open cycles are inconsistent: some restarts stream, some do not. USB link, cable or camera; see NEXT STEP below.') }
+            }
+        }
+    }
+
+    $nextSteps = @()
+    if ($script:delanCams.Count -gt 0 -and $script:cameraHeldByOtherApp.Count -eq 0) {
+        $inFailedState = ($script:reopenVerdict -eq 'dead-state') -or ($script:formatProbePerformed -and $script:streamTestOpened -and $script:streamTestFramesReceived -le 2 -and (@('erratic', 'all-zero', 'no-rows') -contains $script:formatProbeVerdict))
+        if ($script:reopenVerdict -eq 'dies-after-stop') {
+            $nextSteps += 'The camera loses its stream after the first stop and only a power cut brings it back. Further port or software tests on this PC will not change that. Send this report to Delanclip Support as it stands.'
+        }
+        elseif ($inFailedState) {
+            $nextSteps += 'The camera is already in its failed state, so testing other USB ports or software settings now proves nothing: every port shows the same single frame.'
+            $nextSteps += 'Unplug DelanCam1 for 10 minutes with the PC left on (no restart; a restart does not cut USB power), plug it back into the same port and run this tool again. If the first open then streams and the re-open cycles do not, the camera dies after a stop: camera fault. If it still delivers one frame, move it once to the port named under USB TOPOLOGY and run the tool a last time.'
+        }
+    }
+    if ($nextSteps.Count -gt 0) {
+        $summary.Add('')
+        $summary.Add('NEXT STEP')
+        foreach ($s in $nextSteps) { $summary.Add($s) }
     }
 
     $summary.Add('')
@@ -2291,6 +2464,7 @@ Run-Step 'Diagnostic summary' {
             $summary.Add($siblingLine + '.')
             if ($script:usbSiblingCount -ge 8) { $summary.Add('INFO: Many devices share this controller. Unplugging everything except keyboard, mouse and DelanCam1 for one test is worth the minute it takes.') }
         }
+        foreach ($l in $script:usbPortMapSummary) { $summary.Add($l) }
         if ($null -ne $script:usbSelectiveSuspendAc) {
             if ($script:usbSelectiveSuspendAc -eq 0) { $summary.Add('USB selective suspend (mains power): disabled.') }
             else { $summary.Add('INFO: USB selective suspend (mains power) is enabled. Windows may suspend an idle camera and some cameras do not resume cleanly; disabling it in the power plan is a harmless test.') }
