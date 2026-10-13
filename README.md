@@ -15,8 +15,8 @@ who read it and reply with a fix instead of another round of questions.
 | Platform | Tool | Use it when |
 | --- | --- | --- |
 | Windows | [PS3 Eye Diagnostic Tool](windows/ps3-eye/) | The PS3 Eye is not detected, Windows shows only `USB Camera`, or the right driver will not install |
-| Windows | [DelanCam1 Diagnostic Tool](windows/delancam1/) | DelanCam1 is detected incorrectly, Device Manager reports an error, or the camera produces a corrupted image |
-| Windows | [DelanCam1 Fix Tool](windows/delancam1-fixtool/) | Windows Camera shows a picture but OpenTrack or AITrack cannot open DelanCam1, and the diagnostic report flags the Windows video pipeline; repairs the known registry damage after a backup, only when the customer confirms |
+| Windows | [DelanCam1 Fix Tool](windows/delancam1-fixtool/) | Anything wrong with DelanCam1: not detected, a Device Manager error, a corrupted or missing picture, or OpenTrack and AITrack unable to open it. One run collects the full diagnostic report, repairs the known Windows video-pipeline damage after a backup and only when the customer confirms, and zips the report for support |
+| Windows | [DelanCam1 Diagnostic Tool](windows/delancam1/) | Finished project, no longer developed: the report-only collector that the Fix Tool now contains. Kept so published download links keep working |
 
 Linux and macOS tools will live in `linux/` and `macos/` folders beside
 `windows/`. Nothing has been published for them yet.
@@ -37,9 +37,11 @@ attach it to a reply to Delanclip Support. Nothing leaves the machine on its
 own.
 
 The diagnostic tools change nothing on the machine. The one exception is the
-DelanCam1 Fix Tool, which exists to repair known registry damage: it shows every
+DelanCam1 Fix Tool, which also repairs known registry damage: it shows every
 change first, makes them only after the customer confirms, exports a backup and
 writes an undo script before touching anything, and never deletes a file.
+Without the customer's confirmation, or without administrator permission, it
+only collects and reports, exactly like the diagnostic tools.
 
 ## Read it before you run it
 

@@ -1,5 +1,13 @@
 # DelanCam1 Diagnostic Tool (Windows)
 
+**Finished project.** Version 1.4.3 is the last standalone release of this
+tool. Its complete collector now runs as the first pass of the
+[DelanCam1 Fix Tool](../delancam1-fixtool/) (version 2.0.0 and later), which
+collects the same report, repairs what it can and zips the result for support
+in one run. Delanclip Support sends customers the Fix Tool; this folder and
+its release asset stay so that published download links keep working, and
+the file list below still describes what every report contains.
+
 Current version: **1.4.3**. The version number is shown in the title bar and
 the banner of the tool window and is written into every report (`SUMMARY.txt`
 and `README.txt` inside the ZIP), so a report can always be matched to the
