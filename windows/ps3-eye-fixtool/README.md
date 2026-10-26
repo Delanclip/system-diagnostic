@@ -103,7 +103,8 @@ The Fix Tool adds `SUMMARY.txt` (the verdicts before and after, every device
 entry with its driver, every stored package with the decision taken on it, the
 CL-Eye program if installed, the USB path, the findings and what was
 repaired) and `LOG.txt` (everything shown on screen plus every `pnputil`
-command with its output and exit code).
+command with its exit code, and the full output of every repair command; the
+enumeration output lives in its own report files).
 
 ## Usage
 
@@ -210,7 +211,7 @@ Two of the collected files are system-wide rather than camera-specific:
 Both are needed because a camera problem is often caused by a driver that
 belongs to something else. The report also records the Windows build, whether
 the run was elevated, the local user name, the instance IDs and INF names of
-the camera entries, and every `pnputil` command with its output. It stays on
+the camera entries, and every `pnputil` command with its exit code. It stays on
 the Desktop until the customer chooses to send it.
 
 ## Output

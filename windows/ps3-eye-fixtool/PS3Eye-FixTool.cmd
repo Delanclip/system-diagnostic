@@ -260,8 +260,10 @@ function Invoke-PnpUtil {
     # Runs pnputil with the given arguments and returns @{ ExitCode; Output }.
     # Output is captured through files rather than the pipeline, so a line
     # pnputil writes to stderr cannot turn into a terminating error here.
-    # Arguments that contain spaces must arrive already quoted.
-    param([string[]]$Arguments)
+    # Arguments that contain spaces must arrive already quoted. Quiet logs
+    # only the exit code and line count: the enumeration commands produce
+    # hundreds of kilobytes that already go to their own report files.
+    param([string[]]$Arguments, [switch]$Quiet)
     $outFile = Join-Path $env:TEMP ('delanclip-pnputil-' + [guid]::NewGuid().ToString('N') + '.txt')
     $errFile = $outFile + '.err'
     $code = -1
@@ -279,8 +281,14 @@ function Invoke-PnpUtil {
     finally {
         foreach ($f in @($outFile, $errFile)) { try { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force } } catch {} }
     }
-    Write-ToolLog ('    pnputil ' + ($Arguments -join ' ') + ' -> exit code ' + $code)
-    foreach ($line in ($text -split "`r?`n")) { if ($line.Trim()) { Write-ToolLog ('      | ' + $line.TrimEnd()) } }
+    $lines = @($text -split "`r?`n" | Where-Object { $_.Trim() })
+    if ($Quiet) {
+        Write-ToolLog ('    pnputil ' + ($Arguments -join ' ') + ' -> exit code ' + $code + ', ' + $lines.Count + ' lines (in the report file)')
+    }
+    else {
+        Write-ToolLog ('    pnputil ' + ($Arguments -join ' ') + ' -> exit code ' + $code)
+        foreach ($line in $lines) { Write-ToolLog ('      | ' + $line.TrimEnd()) }
+    }
     return @{ ExitCode = $code; Output = $text }
 }
 
@@ -384,7 +392,7 @@ function Get-Ps3EyePackages {
     # version, signer), which is the same in every language.
     if ($packages.Count -gt 0) {
         try {
-            $r = Invoke-PnpUtil @('/enum-drivers')
+            $r = Invoke-PnpUtil @('/enum-drivers') -Quiet
             $block = @()
             $blocks = @()
             foreach ($line in ($r.Output -split "`r?`n")) {
@@ -1119,27 +1127,34 @@ Run-Step 'Signed driver information' {
 }
 
 Run-Step 'PnP entity information' {
-    Get-CimInstance Win32_PnPEntity |
+    $entities = @(Get-CimInstance Win32_PnPEntity |
         Where-Object {
             ($_.PNPClass -eq 'Camera') -or
             ($_.PNPClass -eq 'Image') -or
             ($_.Name -match '(?i)PS3|Eye|USB Camera') -or
             ([string]$_.PNPDeviceID -match '(?i)^USB\\VID_1415&PID_2000')
-        } |
-        Select-Object Name, Status, Manufacturer, PNPClass, Service, ClassGuid, ConfigManagerErrorCode, PNPDeviceID |
-        Format-List |
-        Out-String -Width 500 |
-        Set-Content -LiteralPath (Join-Path $work 'camera-pnp-entities.txt') -Encoding UTF8
+        })
+    $entityPath = Join-Path $work 'camera-pnp-entities.txt'
+    if ($entities.Count -eq 0) {
+        'No matching PnP entities were found.' | Set-Content -LiteralPath $entityPath -Encoding UTF8
+    }
+    else {
+        $entities |
+            Select-Object Name, Status, Manufacturer, PNPClass, Service, ClassGuid, ConfigManagerErrorCode, PNPDeviceID |
+            Format-List |
+            Out-String -Width 500 |
+            Set-Content -LiteralPath $entityPath -Encoding UTF8
+    }
 }
 
 Run-Step 'PnPUtil connected devices' {
-    $r = Invoke-PnpUtil @('/enum-devices', '/connected', '/deviceids', '/drivers')
+    $r = Invoke-PnpUtil @('/enum-devices', '/connected', '/deviceids', '/drivers') -Quiet
     $r.Output | Set-Content -LiteralPath (Join-Path $work 'connected-devices.txt') -Encoding UTF8
     "PnPUtil exit code: $($r.ExitCode)" | Add-Content -LiteralPath (Join-Path $work 'connected-devices.txt') -Encoding UTF8
 }
 
 Run-Step 'PnPUtil driver store' {
-    $r = Invoke-PnpUtil @('/enum-drivers')
+    $r = Invoke-PnpUtil @('/enum-drivers') -Quiet
     $r.Output | Set-Content -LiteralPath (Join-Path $work 'driver-store.txt') -Encoding UTF8
     "PnPUtil exit code: $($r.ExitCode)" | Add-Content -LiteralPath (Join-Path $work 'driver-store.txt') -Encoding UTF8
 }
@@ -1233,7 +1248,12 @@ try {
             exit 2
         }
         Write-Screen ''
-        Write-Screen 'RESULT: everything this tool checks is in order. Nothing to repair.' 'Green'
+        if ($verdict -eq 'missing') {
+            Write-Screen 'RESULT: no old PS3 Eye driver is stored on this PC, but the camera itself was not found, so there is nothing to repair yet.' 'Yellow'
+        }
+        else {
+            Write-Screen 'RESULT: everything this tool checks is in order. Nothing to repair.' 'Green'
+        }
         Write-NextSteps $verdict
         Complete-Run ('nothing to repair (' + $verdict + ')')
         exit 0

@@ -41,7 +41,7 @@ It does not install software, does not install or download any driver, makes no 
 
 The only changes it makes, and only after you press Y, are: removing stored driver packages that name the PS3 Eye (each backed up first), removing leftover entries for the camera's picture interface, and a device rescan. The microphone interface is never touched.
 
-The report records your Windows version and computer model, the camera and imaging devices Windows can see with their properties, hardware IDs and drivers, every connected device and every stored third-party driver package (as pnputil lists them), the Windows device installation log, device events from the last 14 days, the camera entries and packages the Fix Tool found with the decision taken on each, whether the run was elevated and the local user name, and every pnputil command with its output. The README.txt inside every report lists it file by file. It stays on your Desktop until you choose to send it.
+The report records your Windows version and computer model, the camera and imaging devices Windows can see with their properties, hardware IDs and drivers, every connected device and every stored third-party driver package (as pnputil lists them), the Windows device installation log, device events from the last 14 days, the camera entries and packages the Fix Tool found with the decision taken on each, whether the run was elevated and the local user name, and every pnputil command with its exit code. The README.txt inside every report lists it file by file. It stays on your Desktop until you choose to send it.
 
 OUTPUT
 Every run creates inside DELANCLIP on the Desktop:
