@@ -717,7 +717,20 @@ function Invoke-Detection {
         $a = $state.AudioNodes[0]
         # The microphone often shows error code 10 (its driver does not start): it
         # is irrelevant for head tracking and must not be read as the camera fault.
-        $micHuman = 'The second "' + $cameraDisplayName + '" entry in Device Manager is the microphone. Leave it alone'
+        # Device Manager names depend on the driver: with no driver both
+        # interfaces are "USB Camera-B4.09.24.1"; CL-Eye renames the picture
+        # to "PS3Eye Camera", libusbK to its own name. Use the names Windows
+        # shows right now, so the person can find the entry.
+        $micName = $a.FriendlyName
+        if (-not $micName) { $micName = $cameraDisplayName }
+        $imgName = ''
+        if ($state.ImageNode) { $imgName = $state.ImageNode.FriendlyName }
+        if ($imgName -and $imgName -eq $micName) {
+            $micHuman = 'The camera shows twice in Device Manager as "' + $micName + '": one entry is the picture, the other the microphone. Leave the microphone alone'
+        }
+        else {
+            $micHuman = 'In Device Manager "' + $micName + '" (Sound, video and game controllers) is the camera''s microphone. Leave it alone'
+        }
         if ($a.Problem -ne 0) { $micHuman += '; the error on it does not matter.' } else { $micHuman += '; it is fine.' }
         Add-Finding 'MIC' 'NOTE' ('MI_01 (microphone) present: status ' + $a.Status + ', problem ' + $a.Problem + ', service ' + $a.Service + ', ' + $a.Inf) -Human $micHuman
     }

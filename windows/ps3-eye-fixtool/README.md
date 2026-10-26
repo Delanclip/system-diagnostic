@@ -30,8 +30,10 @@ install libusbK itself.
 
 The PS3 Eye is a composite USB device (`USB\VID_1415&PID_2000`) with two
 interfaces. `MI_00` is the picture; `MI_01` is the camera's microphone. Windows
-names both `USB Camera-B4.09.24.1`, which is the root of the most common
-support case:
+names both `USB Camera-B4.09.24.1` as long as no driver is installed (an
+installed driver renames the picture entry: CL-Eye to `PS3Eye Camera`, while
+the microphone keeps its name under Sound, video and game controllers),
+which is the root of the most common support case:
 
 - the customer uninstalls the second entry, the microphone, again and again,
   thinking it is the driver (one report showed about twenty such uninstalls in

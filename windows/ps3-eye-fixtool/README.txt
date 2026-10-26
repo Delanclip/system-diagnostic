@@ -3,7 +3,7 @@ Delanclip PS3 Eye Fix Tool
 PURPOSE
 This is the tool Delanclip Support asks you to run when your PS3 Eye camera will not take the libusbK driver from the Delanclip manual, or keeps going back to an old driver. In a single run it collects the Windows device and driver information support needs, reads which driver Windows has given the camera, clears the old driver packages that keep coming back (only after you confirm), checks again and zips a report for support.
 
-Good to know: the PS3 Eye shows up twice in Device Manager, both times as "USB Camera-B4.09.24.1". One entry is the picture, the other is the camera's microphone. The microphone is fine as it is. This tool never touches it, and you do not need to uninstall it.
+Good to know: the PS3 Eye shows up twice in Device Manager. With no driver installed both entries are called "USB Camera-B4.09.24.1"; an installed driver renames the picture entry (CL-Eye calls it "PS3Eye Camera"), while the microphone stays "USB Camera-B4.09.24.1" under Sound, video and game controllers. The microphone is fine as it is. This tool never touches it, and you do not need to uninstall it.
 
 What it does after you press Y:
 - backs up every old driver package stored for the camera into the run folder, then removes it from Windows and from the camera (CL-Eye, libusb-win32, a WinUSB package made with Zadig, or a stale libusbK copy)
