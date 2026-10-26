@@ -28,36 +28,20 @@ echo ============================================================
 echo        Delanclip PS3 Eye Fix Tool v%DELAN_VERSION%
 echo ============================================================
 echo.
-echo This tool checks which driver Windows has given your PS3 Eye camera and
-echo clears the old driver that keeps coming back, so the camera is ready for
-echo the libusbK step of the Delanclip PS3 Eye manual.
+echo WHAT THIS TOOL DOES
+echo   1. Checks which driver Windows gave your PS3 Eye camera.
+echo   2. Shows what it found. Nothing changes until you press Y.
+echo   3. Backs up and clears the old driver, so the camera is ready for
+echo      the libusbK step of the Delanclip PS3 Eye manual.
+echo   Report and backup: the DELANCLIP folder on your Desktop.
+echo   No internet, no personal files, nothing installed.
 echo.
-echo How it works:
-echo  1. It collects the Windows device and driver information Delanclip
-echo     Support needs (about a minute). No camera picture is taken.
-echo  2. It tells you in plain words what it found. Nothing is changed
-echo     until you answer Y to "Repair now?".
-echo  3. Before any change, the old driver packages are backed up and an
-echo     UNDO script is saved, so everything can be put back with one click.
-echo  4. Everything, including a report ZIP for Delanclip Support, lands in
-echo     the DELANCLIP folder on your Desktop, which opens by itself at
-echo     the end.
-echo.
-echo Good to know: the PS3 Eye shows up twice in Device Manager, both times
-echo as "USB Camera-B4.09.24.1". One entry is the picture, the other is the
-echo camera's microphone. The microphone is fine as it is. This tool never
-echo touches it, and you do not need to uninstall it.
-echo.
-echo It deletes no personal files, installs nothing and never connects to
-echo the internet.
-echo.
-echo If Windows shows "Smart App Control blocked a file", close that message,
-echo right-click PS3Eye-FixTool.cmd and choose "Run as administrator".
-echo.
-echo Before you continue: keep the PS3 Eye connected, if possible straight
-echo into a USB port at the back of the PC, and close OpenTrack.
-echo.
-echo Windows will now ask for permission to make changes. Please answer Yes.
+echo BEFORE YOU CONTINUE
+echo   - Plug the PS3 Eye straight into a USB port at the back of the PC.
+echo   - Close OpenTrack.
+echo   - Windows will ask for permission to make changes. Answer Yes.
+echo   - "Smart App Control blocked a file"? Close it, right-click
+echo     PS3Eye-FixTool.cmd and choose "Run as administrator".
 echo.
 pause
 
@@ -209,10 +193,41 @@ function Write-ToolLog {
     try { [System.IO.File]::AppendAllText($script:LogPath, $Text + "`r`n", (New-Object System.Text.UTF8Encoding($false))) } catch {}
 }
 
+function Format-ScreenLine {
+    # Wraps one screen line at the window width, word by word, with a
+    # hanging indent under a list marker, so no sentence breaks mid-word
+    # at the window edge.
+    param([string]$Text, [int]$Width)
+    if ($Text.Length -le $Width) { return @($Text) }
+    $lead = $Text.Length - $Text.TrimStart().Length
+    $leadText = $Text.Substring(0, $lead)
+    $body = $Text.Substring($lead)
+    $hang = $leadText
+    if ($body -match '^(\d+\.\s+|-\s+|Repair:\s+|Camera:\s+)') { $hang = $leadText + (' ' * $Matches[1].Length) }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $current = $leadText
+    $prefixLen = $leadText.Length
+    foreach ($word in ($body -split ' +')) {
+        if ($current.Length -eq $prefixLen) { $current += $word; continue }
+        if (($current.Length + 1 + $word.Length) -gt $Width) {
+            $lines.Add($current)
+            $current = $hang + $word
+            $prefixLen = $hang.Length
+        }
+        else { $current += ' ' + $word }
+    }
+    $lines.Add($current)
+    return @($lines)
+}
+
 function Write-Screen {
     # Plain-language line for the person at the keyboard; also logged.
     param([string]$Text = '', [string]$Color = '')
-    if ($Color) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
+    $width = 78
+    try { $w = $Host.UI.RawUI.WindowSize.Width; if ($w -ge 40) { $width = $w - 2 } } catch {}
+    foreach ($line in (Format-ScreenLine $Text $width)) {
+        if ($Color) { Write-Host $line -ForegroundColor $Color } else { Write-Host $line }
+    }
     Write-ToolLog ('>> ' + $Text)
 }
 
@@ -631,21 +646,18 @@ function Invoke-Detection {
 
     # CL-Eye program: a person has to uninstall it; the tool only says so.
     foreach ($c in $state.ClEye) {
-        Add-Finding 'CLEYE' 'MANUAL' ('CL-Eye software is installed: ' + $c.Name + ' ' + $c.Version + ' (' + $c.Publisher + ')') -Human ('The CL-Eye program ("' + $c.Name + '") is still installed. Its driver takes the camera over every time it is connected. Uninstall it from Windows Settings, Apps, restart Windows, then run this tool again.')
+        Add-Finding 'CLEYE' 'MANUAL' ('CL-Eye software is installed: ' + $c.Name + ' ' + $c.Version + ' (' + $c.Publisher + ')') -Human ('The program "' + $c.Name + '" is still installed and takes the camera over. Uninstall it yourself (Windows Settings, Apps).')
     }
 
     # Stored packages that Windows would put back on the camera.
     foreach ($p in $state.Remove) {
         $label = Get-KindLabel $p.Kind
         $boundNow = ($null -ne $state.ImageNode -and $state.ImageNode.Inf -eq $p.PublishedName)
-        $human = 'Windows has ' + $label + ' stored for the PS3 Eye (' + $p.PublishedName
-        if ($p.OriginalName) { $human += ', ' + $p.OriginalName }
-        if ($p.Provider) { $human += ', ' + $p.Provider }
-        $human += ').'
-        if ($boundNow) { $human += ' The camera''s picture interface is using it right now.' }
-        elseif ($p.Kind -eq 'libusbk') { $human += ' It is a stale copy the camera is not using.' }
-        else { $human += ' Windows installs it again every time the camera is plugged in.' }
-        $fix = 'Back the package up to the run folder, then remove it from the Windows driver store'
+        $human = 'Windows keeps ' + $label + ' for the PS3 Eye (' + $p.PublishedName + ')'
+        if ($boundNow) { $human += ' and the camera is using it.' }
+        elseif ($p.Kind -eq 'libusbk') { $human += ', a stale copy the camera is not using.' }
+        else { $human += ' and puts it back every time the camera is plugged in.' }
+        $fix = 'Back it up, then remove it from Windows'
         if ($boundNow) { $fix += ' and from the camera' }
         $fix += '.'
         $plan = @(
@@ -653,7 +665,7 @@ function Invoke-Detection {
             ('pnputil /delete-driver ' + $p.PublishedName + ' /uninstall /force')
         )
         if (-not $canManagePackages) {
-            Add-Finding ('PKG-' + $p.PublishedName) 'MANUAL' ('stored package ' + $p.PublishedName + ' (' + $p.Kind + ') cannot be removed: pnputil on this Windows build has no /delete-driver') -Human ($human + ' This Windows version is too old for the tool to remove it; please send the report to Delanclip Support.')
+            Add-Finding ('PKG-' + $p.PublishedName) 'MANUAL' ('stored package ' + $p.PublishedName + ' (' + $p.Kind + ') cannot be removed: pnputil on this Windows build has no /delete-driver') -Human ($human + ' This Windows version is too old for the tool to remove it. Send the report to Delanclip Support.')
             continue
         }
         Add-Finding ('PKG-' + $p.PublishedName) 'FIX' ('stored package ' + $p.PublishedName + ' (' + $p.Kind + ', ' + $p.Provider + ', ' + $p.DriverVer + ')' + $(if ($boundNow) { ', bound to MI_00 now' } else { '' })) -Plan $plan -Context @{ Package = $p } -Human $human -Fix $fix -Action {
@@ -676,20 +688,20 @@ function Invoke-Detection {
     # The picture interface is on a foreign driver whose package is not in the
     # store (nothing to delete) - say so rather than guess.
     if ($state.ImageNode -and $state.ImageNode.DriverKind -notin @('none', 'libusbk') -and $state.Remove.Count -eq 0) {
-        Add-Finding 'BOUND' 'MANUAL' ('MI_00 is bound to ' + $state.ImageNode.DriverKind + ' via ' + $state.ImageNode.Inf + ' but no stored package names the camera') -Human ('The camera''s picture interface is using ' + (Get-KindLabel $state.ImageNode.DriverKind) + ' that this tool cannot trace to a stored package. Please send the report to Delanclip Support.')
+        Add-Finding 'BOUND' 'MANUAL' ('MI_00 is bound to ' + $state.ImageNode.DriverKind + ' via ' + $state.ImageNode.Inf + ' but no stored package names the camera') -Human ('The camera is on ' + (Get-KindLabel $state.ImageNode.DriverKind) + ' this tool cannot trace. Send the report to Delanclip Support.')
     }
     if ($state.ImageNode -and $state.ImageNode.DriverKind -eq 'libusbk' -and $state.ImageNode.Problem -ne 0 -and $state.Remove.Count -eq 0) {
-        Add-Finding 'LIBK-ERR' 'MANUAL' ('MI_00 is on libusbK but reports problem code ' + $state.ImageNode.Problem) -Human ('The camera''s picture interface is on the libusbK driver, but Windows reports error code ' + $state.ImageNode.Problem + ' for it, and the package behind it could not be found in the driver store. Please send the report to Delanclip Support.')
+        Add-Finding 'LIBK-ERR' 'MANUAL' ('MI_00 is on libusbK but reports problem code ' + $state.ImageNode.Problem) -Human ('The camera is on the libusbK driver, but Windows reports error ' + $state.ImageNode.Problem + ' for it. Send the report to Delanclip Support.')
     }
 
     # Leftover MI_00 entries from earlier connections.
     foreach ($ph in $state.Phantoms) {
-        $human = 'Windows keeps an old entry for the camera''s picture interface from an earlier connection (' + $ph.InstanceId + ', ' + (Get-KindLabel $ph.DriverKind) + ').'
+        $human = 'Windows keeps an old entry for the camera from an earlier connection (' + (Get-KindLabel $ph.DriverKind) + ').'
         if (-not $canScan) {
-            Add-Finding ('NODE-' + $ph.InstanceId) 'MANUAL' ('leftover MI_00 node ' + $ph.InstanceId + ' cannot be removed: pnputil on this Windows build has no /remove-device') -Human ($human + ' This Windows version is too old for the tool to remove it; it does no harm on its own.')
+            Add-Finding ('NODE-' + $ph.InstanceId) 'MANUAL' ('leftover MI_00 node ' + $ph.InstanceId + ' cannot be removed: pnputil on this Windows build has no /remove-device') -Human ($human + ' This Windows version is too old for the tool to remove it; it does no harm.')
             continue
         }
-        Add-Finding ('NODE-' + $ph.InstanceId) 'FIX' ('leftover MI_00 node ' + $ph.InstanceId + ' (not present, ' + $ph.DriverKind + ', ' + $ph.Inf + ')') -Plan @('pnputil /remove-device "' + $ph.InstanceId + '"') -Context @{ Node = $ph } -Human $human -Fix 'Remove the leftover entry. Windows recreates it cleanly the next time the camera is connected there.' -Action {
+        Add-Finding ('NODE-' + $ph.InstanceId) 'FIX' ('leftover MI_00 node ' + $ph.InstanceId + ' (not present, ' + $ph.DriverKind + ', ' + $ph.Inf + ')') -Plan @('pnputil /remove-device "' + $ph.InstanceId + '"') -Context @{ Node = $ph } -Human $human -Fix 'Remove it. Windows recreates it when the camera is next plugged in there.' -Action {
             param($ctx)
             $node = $ctx.Node
             $r = Invoke-PnpUtil @('/remove-device', ('"' + $node.InstanceId + '"'))
@@ -705,8 +717,8 @@ function Invoke-Detection {
         $a = $state.AudioNodes[0]
         # The microphone often shows error code 10 (its driver does not start): it
         # is irrelevant for head tracking and must not be read as the camera fault.
-        $micHuman = 'The second "' + $cameraDisplayName + '" entry in Device Manager is the camera''s microphone. It does not need to be uninstalled; this tool leaves it alone.'
-        if ($a.Problem -ne 0) { $micHuman += ' Windows may show an error on it; that has no effect on head tracking.' } else { $micHuman += ' It is correct as it is.' }
+        $micHuman = 'The second "' + $cameraDisplayName + '" entry in Device Manager is the microphone. Leave it alone'
+        if ($a.Problem -ne 0) { $micHuman += '; the error on it does not matter.' } else { $micHuman += '; it is fine.' }
         Add-Finding 'MIC' 'NOTE' ('MI_01 (microphone) present: status ' + $a.Status + ', problem ' + $a.Problem + ', service ' + $a.Service + ', ' + $a.Inf) -Human $micHuman
     }
     foreach ($p in $state.AudioOnly) {
@@ -716,7 +728,7 @@ function Invoke-Detection {
     # USB path, for the person and for support.
     if ($Pass -eq 'before' -and $script:Topology) {
         if ($script:Topology.ExternalHubs -gt 0) {
-            Add-Finding 'USB' 'WARN' ('camera connected through ' + $script:Topology.ExternalHubs + ' external hub(s); ' + $script:Topology.Controller) -Human 'The camera is connected through a USB hub. For the driver steps, plug it straight into a USB port at the back of the PC.'
+            Add-Finding 'USB' 'WARN' ('camera connected through ' + $script:Topology.ExternalHubs + ' external hub(s); ' + $script:Topology.Controller) -Human 'The camera is behind a USB hub. Plug it straight into a port at the back of the PC.'
         }
         else {
             Add-Finding 'USB' 'INFO' ('camera connected directly; ' + $script:Topology.Controller)
@@ -846,11 +858,11 @@ function Invoke-UndoFlow {
 function Get-VerdictSentence {
     param([string]$Verdict)
     switch ($Verdict) {
-        'healthy' { return 'the picture interface is on the libusbK driver and Windows reports it as working' }
-        'ready' { return 'the picture interface has no driver, exactly the state the manual needs before its libusbK step' }
-        'blocked' { return 'an old driver or stored driver package is in the way' }
-        'missing' { return 'Windows does not see the camera''s picture interface' }
-        'cl-eye-installed' { return 'the CL-Eye software is still installed' }
+        'healthy' { return 'on the libusbK driver and working' }
+        'ready' { return 'no driver on the picture interface, ready for the libusbK step' }
+        'blocked' { return 'an old driver or driver package is in the way' }
+        'missing' { return 'not found by Windows' }
+        'cl-eye-installed' { return 'taken over by the CL-Eye program' }
     }
     return $Verdict
 }
@@ -940,8 +952,8 @@ function Complete-Run {
     }
     catch { Write-ToolLog ('  ZIP failed: ' + $_.Exception.Message) }
     Write-Screen ''
-    if ($zipOk) { Write-Screen ('Report for Delanclip Support (send it only if the camera still does not work): ' + (Split-Path $zipPath -Leaf) + ' in the DELANCLIP folder on your Desktop.') }
-    else { Write-Screen ('The report could not be zipped. If Delanclip Support asks for it, send them this folder: ' + $runDir) 'Yellow' }
+    if ($zipOk) { Write-Screen ('Report: ' + (Split-Path $zipPath -Leaf) + ' in the DELANCLIP folder on your Desktop. Send it only if Delanclip Support asks for it.') }
+    else { Write-Screen ('The report could not be zipped. If Delanclip Support asks for it, send this folder: ' + $runDir) 'Yellow' }
     Open-OutputFolder
 }
 
@@ -952,31 +964,32 @@ function Open-OutputFolder {
 function Write-NextSteps {
     param([string]$Verdict)
     Write-Screen ''
-    Write-Screen 'WHAT TO DO NEXT' 'Cyan'
+    Write-Screen 'WHAT YOU DO NEXT' 'Cyan'
+    $k = 0
     switch ($Verdict) {
         'ready' {
-            Write-Screen ('  The camera is now in the state the Delanclip manual needs: "' + $cameraDisplayName + '" with an exclamation mark under Other devices in Device Manager.')
-            Write-Screen ('  1. Continue with Step 2 of the PS3 Eye manual, the libusbK installer: ' + $manualUrl)
-            Write-Screen '  2. In the libusbK wizard (Step 3) the camera should now appear in the device list.'
-            Write-Screen ('  3. Do not uninstall anything else. The second "' + $cameraDisplayName + '" entry is the microphone and is correct as it is.')
+            if ($script:AppliedAreas.Count -gt 0) { $k++; Write-Screen ('  ' + $k + '. Unplug the PS3 Eye, wait ten seconds, plug it in again.') }
+            $k++; Write-Screen ('  ' + $k + '. Continue with Step 2 of the PS3 Eye manual, the libusbK installer:')
+            Write-Screen ('     ' + $manualUrl)
+            $k++; Write-Screen ('  ' + $k + '. The camera now appears in the libusbK wizard. Uninstall nothing else.')
         }
         'healthy' {
-            Write-Screen '  1. Start OpenTrack, choose the PS3 Eye camera input and press Start.'
-            Write-Screen '  2. If OpenTrack still cannot open the camera, send the report ZIP from the DELANCLIP folder on your Desktop to Delanclip Support.'
+            Write-Screen '  1. Start OpenTrack, pick the PS3 Eye and press Start.'
+            Write-Screen '  2. Still no picture? Send the report to Delanclip Support.'
         }
         'missing' {
-            Write-Screen '  1. Plug the PS3 Eye straight into a USB port at the back of the PC: not a hub, not the front panel.'
-            Write-Screen '  2. Wait ten seconds, then run this tool again.'
-            Write-Screen '  3. If it still is not found, try another rear port and another cable, then send the report ZIP to Delanclip Support.'
+            Write-Screen '  1. Plug the PS3 Eye straight into a USB port at the back of the PC.'
+            Write-Screen '  2. Wait ten seconds and run this tool again.'
+            Write-Screen '  3. Still not found? Try another port and cable, then send the report.'
         }
         'cl-eye-installed' {
-            Write-Screen '  1. Uninstall the CL-Eye program from Windows Settings, Apps.'
+            Write-Screen '  1. Uninstall "CL-Eye Driver" in Windows Settings, Apps.'
             Write-Screen '  2. Restart Windows.'
-            Write-Screen '  3. Run this tool again; it will then clear the stored CL-Eye driver package.'
+            Write-Screen '  3. Run this tool again.'
         }
         default {
-            Write-Screen '  1. Unplug the PS3 Eye, wait ten seconds, plug it into a rear USB port and run this tool again.'
-            Write-Screen '  2. If the result is the same, send the report ZIP from the DELANCLIP folder on your Desktop to Delanclip Support.'
+            Write-Screen '  1. Unplug the PS3 Eye, wait ten seconds, plug it into a rear USB port.'
+            Write-Screen '  2. Run this tool again. Same result? Send the report to Delanclip Support.'
         }
     }
 }
@@ -1245,48 +1258,40 @@ try {
     $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
     $verdict = $script:State.Verdict
 
+    # Screen layout from here on: short blocks, one idea per line. WHAT I
+    # FOUND, WHAT I WILL DO (asks Y), WHAT I DID, RESULT, WHAT YOU DO NEXT.
     Write-Screen ''
-    Write-Screen ('Camera state: ' + (Get-VerdictSentence $verdict) + '.')
-    foreach ($note in $screen.Notes) { Write-Screen ('  Note: ' + $note.Human) }
+    Write-Screen 'WHAT I FOUND' 'Cyan'
+    Write-Screen ('  Camera: ' + (Get-VerdictSentence $verdict) + '.')
+    foreach ($note in $screen.Notes) { Write-Screen ('  ' + $note.Human) }
+    foreach ($m in $screen.Manual) { Write-Screen ('  ' + $m.Human) 'Yellow' }
 
     if ($fixes.Count -eq 0) {
+        Write-Screen ''
         if ($screen.Manual.Count -gt 0) {
-            Write-Screen ''
-            Write-Screen 'RESULT: nothing for this tool to repair, but something needs your attention:' 'Yellow'
-            foreach ($m in $screen.Manual) { Write-Screen ('  - ' + $m.Human) }
+            Write-Screen 'RESULT: nothing for this tool to repair. One step is yours, see above.' 'Yellow'
             Write-NextSteps $verdict
             Complete-Run ('nothing to repair; manual attention needed (' + $verdict + ')')
             exit 2
         }
-        Write-Screen ''
-        if ($verdict -eq 'missing') {
-            Write-Screen 'RESULT: no old PS3 Eye driver is stored on this PC, but the camera itself was not found, so there is nothing to repair yet.' 'Yellow'
-        }
-        else {
-            Write-Screen 'RESULT: everything this tool checks is in order. Nothing to repair.' 'Green'
-        }
+        if ($verdict -eq 'missing') { Write-Screen 'RESULT: no old driver stored, but the camera was not found.' 'Yellow' }
+        else { Write-Screen 'RESULT: all in order. Nothing to repair.' 'Green' }
         Write-NextSteps $verdict
         Complete-Run ('nothing to repair (' + $verdict + ')')
         exit 0
     }
 
     Write-Screen ''
-    $n = $screen.Fixes.Count
-    Write-Screen ('RESULT: ' + $n + ' problem' + $(if ($n -eq 1) { '' } else { 's' }) + ' found that can keep an old driver on the PS3 Eye.') 'Yellow'
+    Write-Screen 'WHAT I WILL DO (only after you press Y)' 'Cyan'
     $k = 0
     foreach ($f in $screen.Fixes) {
         $k++
         Write-Screen ('  ' + $k + '. ' + $f.Human)
         if ($f.Fix) { Write-Screen ('     Repair: ' + $f.Fix) }
     }
-    if ($screen.Manual.Count -gt 0) {
-        Write-Screen ''
-        Write-Screen 'Also needs your attention (the tool cannot change this):'
-        foreach ($m in $screen.Manual) { Write-Screen ('  - ' + $m.Human) }
-    }
-    Write-Screen ''
-    Write-Screen 'Before any change, the packages are exported to the DELANCLIP folder on your Desktop, next to an UNDO script.'
-    Write-Screen 'Running this tool again later also offers to undo the repair.'
+    $k++
+    Write-Screen ('  ' + $k + '. Ask Windows to look at the camera again and check it.')
+    Write-Screen '  Backup and UNDO.cmd go to the DELANCLIP folder on your Desktop.'
     Write-Section 'CHANGES THE REPAIR WOULD MAKE (technical)'
     foreach ($f in $fixes) {
         Write-ToolLog ('  ' + $f.Id + ': ' + $f.Text)
@@ -1296,7 +1301,7 @@ try {
     if ($mode -ne 'apply') {
         if (-not $isAdmin) {
             Write-Screen ''
-            Write-Screen 'To repair, run the tool again and answer Yes when Windows asks for permission.' 'Yellow'
+            Write-Screen 'Not repaired: no administrator permission. Run the tool again and answer Yes.' 'Yellow'
             Complete-Run ('problems found; not repaired (no administrator permission) (' + $verdict + ')')
             exit 2
         }
@@ -1304,7 +1309,7 @@ try {
         $answer = Read-Choice 'Repair now? Press Y for yes or N for no:'
         if ($answer -ne 'Y') {
             Write-Screen ''
-            Write-Screen 'Nothing was changed. Run the tool again whenever you want to repair.' 'Yellow'
+            Write-Screen 'Nothing was changed. Run the tool again when you want to repair.' 'Yellow'
             Complete-Run ('problems found; repair declined (' + $verdict + ')')
             exit 2
         }
@@ -1316,7 +1321,7 @@ try {
     Write-ToolLog ('  Backup folder: ' + $driverBackupDir)
     if (-not (Test-Path -LiteralPath $driverBackupDir)) { New-Item -ItemType Directory -Force -Path $driverBackupDir | Out-Null }
     Write-Host ''
-    Write-Host 'Repairing...'
+    Write-Host 'WHAT I DID' -ForegroundColor Cyan
     $k = 0
     foreach ($f in $fixes) {
         Write-ToolLog ('  ' + $f.Id + ': ' + $f.Text)
@@ -1335,38 +1340,35 @@ try {
     }
     Write-UndoScript
 
-    Write-Host ''
-    Write-Host 'Asking Windows to look at the camera again ... ' -NoNewline
+    $k++
+    Write-Host ('  ' + $k + '. Ask Windows to look at the camera again ... ') -NoNewline
     Wait-ForRescan
     Write-Host 'done' -ForegroundColor Green
-    if (-not $canScan) { Write-Screen 'This Windows version cannot rescan devices on request: unplug the PS3 Eye and plug it in again now, then wait ten seconds.' 'Yellow'; Start-Sleep -Seconds 10 }
+    if (-not $canScan) { Write-Screen '     This Windows cannot rescan on request: unplug the PS3 Eye and plug it in again now.' 'Yellow'; Start-Sleep -Seconds 10 }
 
-    Write-Host 'Checking again ... ' -NoNewline
+    $k++
+    Write-Host ('  ' + $k + '. Check again ... ') -NoNewline
     Invoke-Detection 'after' -Quiet
     $after = Get-ScreenFindings
     $remaining = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
     $verdictAfter = $script:State.Verdict
     if ($remaining.Count -eq 0 -and $script:ApplyErrors -eq 0) {
-        Write-Host 'all clear.' -ForegroundColor Green
+        Write-Host 'all clear' -ForegroundColor Green
         Write-ToolLog '>> Verification: all clear'
     }
     else {
-        Write-Host 'some problems remain.' -ForegroundColor Yellow
-        foreach ($f in $after.Fixes) { Write-Screen ('  - still present: ' + $f.Human) 'Yellow' }
-        if ($script:ApplyErrors -gt 0) { Write-Screen ('  - ' + $script:ApplyErrors + ' repair step(s) failed. Please send the report ZIP to Delanclip Support.') 'Yellow' }
+        Write-Host 'problems remain' -ForegroundColor Yellow
     }
     Write-Screen ''
-    Write-Screen ('Camera state now: ' + (Get-VerdictSentence $verdictAfter) + '.')
-    if ($after.Manual.Count -gt 0) {
-        Write-Screen ''
-        Write-Screen 'Still needs your attention:'
-        foreach ($m in $after.Manual) { Write-Screen ('  - ' + $m.Human) }
-    }
+    Write-Screen 'RESULT' 'Cyan'
+    Write-Screen ('  Camera: ' + (Get-VerdictSentence $verdictAfter) + '.')
+    foreach ($f in $after.Fixes) { Write-Screen ('  Still there: ' + $f.Human) 'Yellow' }
+    if ($script:ApplyErrors -gt 0) { Write-Screen ('  ' + $script:ApplyErrors + ' repair step(s) failed. Send the report to Delanclip Support.') 'Yellow' }
+    foreach ($m in $after.Manual) { Write-Screen ('  ' + $m.Human) 'Yellow' }
 
     Write-NextSteps $verdictAfter
     Write-Screen ''
-    Write-Screen ('Exported packages, UNDO.cmd and the full log are in: ' + $backupDir)
-    Write-Screen 'To undo: run UNDO.cmd in that folder as administrator, or run this tool again and press U.'
+    Write-Screen '  Undo: run this tool again and press U, or run UNDO.cmd in the DELANCLIP folder as administrator.'
     $outcome = 'repaired and verified (' + $verdictAfter + ')'
     if ($after.Manual.Count -gt 0) { $outcome = 'repaired; a manual step remains (' + $verdictAfter + ')' }
     if ($remaining.Count -gt 0 -or $script:ApplyErrors -gt 0) { $outcome = 'repaired, but problems remain (' + $remaining.Count + ' finding(s), ' + $script:ApplyErrors + ' failed step(s), ' + $verdictAfter + ')' }
