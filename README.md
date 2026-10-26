@@ -14,7 +14,8 @@ who read it and reply with a fix instead of another round of questions.
 
 | Platform | Tool | Use it when |
 | --- | --- | --- |
-| Windows | [PS3 Eye Diagnostic Tool](windows/ps3-eye/) | The PS3 Eye is not detected, Windows shows only `USB Camera`, or the right driver will not install |
+| Windows | [PS3 Eye Fix Tool](windows/ps3-eye-fixtool/) | The PS3 Eye will not take the libusbK driver from the Delanclip manual, or keeps going back to an old one. One run collects the full diagnostic report, backs up and removes the stored driver packages Windows keeps putting back on the camera (only after the customer confirms), and leaves the camera ready for the manual's libusbK step. It never touches the camera's microphone interface |
+| Windows | [PS3 Eye Diagnostic Tool](windows/ps3-eye/) | Finished project, no longer developed: the report-only collector that the PS3 Eye Fix Tool now contains. Kept so published download links keep working |
 | Windows | [DelanCam1 Fix Tool](windows/delancam1-fixtool/) | Anything wrong with DelanCam1: not detected, a Device Manager error, a corrupted or missing picture, or OpenTrack and AITrack unable to open it. One run collects the full diagnostic report, repairs the known Windows video-pipeline damage after a backup and only when the customer confirms, and zips the report for support |
 | Windows | [DelanCam1 Diagnostic Tool](windows/delancam1/) | Finished project, no longer developed: the report-only collector that the Fix Tool now contains. Kept so published download links keep working |
 
@@ -36,12 +37,14 @@ The ZIP a tool produces stays on the Desktop until the customer chooses to
 attach it to a reply to Delanclip Support. Nothing leaves the machine on its
 own.
 
-The diagnostic tools change nothing on the machine. The one exception is the
-DelanCam1 Fix Tool, which also repairs known registry damage: it shows every
-change first, makes them only after the customer confirms, exports a backup and
-writes an undo script before touching anything, and never deletes a file.
-Without the customer's confirmation, or without administrator permission, it
-only collects and reports, exactly like the diagnostic tools.
+The diagnostic tools change nothing on the machine. The two Fix Tools do, and
+only in one bounded way each: the DelanCam1 Fix Tool repairs known registry
+damage, and the PS3 Eye Fix Tool removes stored driver packages and leftover
+device entries for the PS3 Eye. Both show every change first, make it only
+after the customer confirms, export a backup and write an undo script before
+touching anything, and never delete a personal file. Without the customer's
+confirmation, or without administrator permission, they only collect and
+report, exactly like the diagnostic tools.
 
 ## Read it before you run it
 

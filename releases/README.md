@@ -21,8 +21,8 @@ release contains the assets of **all** tools, so a link to a tool that did not
 change keeps working after another tool is updated.
 
 The asset name is the name of the tool's `.cmd` file with `.zip` in place of
-`.cmd`: `Delanclip-PS3Eye-Diagnostics.zip`, `DelanCam1-Diagnostics.zip` and
-`DelanCam1-FixTool.zip`.
+`.cmd`: `Delanclip-PS3Eye-Diagnostics.zip`, `PS3Eye-FixTool.zip`,
+`DelanCam1-Diagnostics.zip` and `DelanCam1-FixTool.zip`.
 
 ## How a release is made
 
