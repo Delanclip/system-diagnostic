@@ -534,7 +534,9 @@ function Get-Ps3EyeState {
     # One read of everything the verdict depends on.
     $nodes = Get-Ps3EyeNodes
     $packages = Get-Ps3EyePackages
-    $clEye = Get-ClEyeProgram
+    # @( ) on every function result: a single returned object is not an array,
+    # and .Count on a PSCustomObject is empty in Windows PowerShell 5.1.
+    $clEye = @(Get-ClEyeProgram)
     $image = @($nodes | Where-Object { $_.Role -eq 'image' -and $_.Present })
     $imageNode = $null
     if ($image.Count -gt 0) { $imageNode = $image[0] }
@@ -560,7 +562,9 @@ function Get-Ps3EyeState {
     if ($clEye.Count -gt 0) { $verdict = 'cl-eye-installed' }
     elseif ($null -eq $imageNode) { $verdict = 'missing' }
     elseif ($imageNode.DriverKind -eq 'libusbk' -and $imageNode.Problem -eq 0 -and $remove.Count -eq 0 -and $phantoms.Count -eq 0) { $verdict = 'healthy' }
-    elseif ($imageNode.DriverKind -eq 'none' -and ($imageNode.Problem -eq 28 -or $imageNode.Problem -eq 1) -and $remove.Count -eq 0 -and $phantoms.Count -eq 0) { $verdict = 'ready' }
+    # Code 28 (no driver installed) or 1 (not configured); code 0 with no driver
+    # is the same interface a moment before Windows has settled it.
+    elseif ($imageNode.DriverKind -eq 'none' -and ($imageNode.Problem -eq 28 -or $imageNode.Problem -eq 1 -or $imageNode.Problem -eq 0) -and $remove.Count -eq 0 -and $phantoms.Count -eq 0) { $verdict = 'ready' }
     return [pscustomobject]@{
         Nodes = @($nodes); Packages = @($packages); ClEye = @($clEye)
         ImageNode = $imageNode; Phantoms = @($phantoms); AudioNodes = @($audio)
@@ -735,12 +739,15 @@ function Wait-ForRescan {
         $r = Invoke-PnpUtil @('/scan-devices')
         if (-not (Test-PnpUtilSuccess $r.ExitCode -AllowNoMoreItems)) { Write-ToolLog ('    scan-devices returned ' + $r.ExitCode) }
     }
-    for ($i = 0; $i -lt 10; $i++) {
+    # Right after /delete-driver /uninstall the interface is still listed with
+    # no driver and no problem code; within seconds Windows settles it to code
+    # 28, or installs another stored package. Only the settled state is judged.
+    for ($i = 0; $i -lt 15; $i++) {
         Start-Sleep -Seconds 1
         $nodes = @()
         try { $nodes = Get-Ps3EyeNodes } catch {}
         $img = @($nodes | Where-Object { $_.Role -eq 'image' -and $_.Present })
-        if ($img.Count -gt 0) { break }
+        if ($img.Count -gt 0 -and ($img[0].DriverKind -ne 'none' -or $img[0].Problem -ne 0)) { break }
     }
 }
 
@@ -1361,6 +1368,7 @@ try {
     Write-Screen ('Exported packages, UNDO.cmd and the full log are in: ' + $backupDir)
     Write-Screen 'To undo: run UNDO.cmd in that folder as administrator, or run this tool again and press U.'
     $outcome = 'repaired and verified (' + $verdictAfter + ')'
+    if ($after.Manual.Count -gt 0) { $outcome = 'repaired; a manual step remains (' + $verdictAfter + ')' }
     if ($remaining.Count -gt 0 -or $script:ApplyErrors -gt 0) { $outcome = 'repaired, but problems remain (' + $remaining.Count + ' finding(s), ' + $script:ApplyErrors + ' failed step(s), ' + $verdictAfter + ')' }
     Complete-Run $outcome
 
