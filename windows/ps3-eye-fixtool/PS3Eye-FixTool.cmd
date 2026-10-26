@@ -646,7 +646,7 @@ function Invoke-Detection {
 
     # CL-Eye program: a person has to uninstall it; the tool only says so.
     foreach ($c in $state.ClEye) {
-        Add-Finding 'CLEYE' 'MANUAL' ('CL-Eye software is installed: ' + $c.Name + ' ' + $c.Version + ' (' + $c.Publisher + ')') -Human ('The program "' + $c.Name + '" is still installed and takes the camera over. Uninstall it yourself (Windows Settings, Apps).')
+        Add-Finding 'CLEYE' 'MANUAL' ('CL-Eye software is installed: ' + $c.Name + ' ' + $c.Version + ' (' + $c.Publisher + ')') -Human ('You must uninstall "' + $c.Name + '" before the repair (Windows Settings, Apps).')
     }
 
     # Stored packages that Windows would put back on the camera.
@@ -1257,6 +1257,40 @@ try {
     $screen = Get-ScreenFindings
     $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
     $verdict = $script:State.Verdict
+
+    # The CL-Eye program installs its driver again as long as it exists, and
+    # this tool does not run anybody else's uninstaller. So the repair is not
+    # offered until the person has uninstalled it: ask, wait, check again.
+    if ($script:State.ClEye.Count -gt 0) {
+        $c = $script:State.ClEye[0]
+        Write-Screen ''
+        Write-Screen 'WHAT I FOUND' 'Cyan'
+        Write-Screen ('  Camera: ' + (Get-VerdictSentence $verdict) + '.')
+        Write-Screen ('  You must uninstall "' + $c.Name + '" before proceeding with the repair.') 'Yellow'
+        Write-Screen '  Windows Settings, Apps, Installed apps: find it and choose Uninstall.'
+        Write-Host ''
+        $answer = Read-Choice ('Have you uninstalled "' + $c.Name + '"? Press Y when done, or N to stop:')
+        if ($answer -ne 'Y') {
+            Write-Screen ''
+            Write-Screen 'Nothing was changed. Uninstall the program, then run this tool again.' 'Yellow'
+            Complete-Run ('CL-Eye program installed; repair not offered (' + $verdict + ')')
+            exit 2
+        }
+        Write-Host ''
+        Write-Host 'Checking again ... ' -NoNewline
+        Invoke-Detection 'before' -Quiet
+        $screen = Get-ScreenFindings
+        $fixes = @($script:Findings | Where-Object { $_.Severity -eq 'FIX' })
+        $verdict = $script:State.Verdict
+        if ($script:State.ClEye.Count -gt 0) {
+            Write-Host 'still installed' -ForegroundColor Yellow
+            Write-Screen ''
+            Write-Screen ('RESULT: "' + $c.Name + '" is still installed. Uninstall it, then run this tool again.') 'Yellow'
+            Complete-Run ('CL-Eye program still installed; repair not offered (' + $verdict + ')')
+            exit 2
+        }
+        Write-Host 'program gone' -ForegroundColor Green
+    }
 
     # Screen layout from here on: short blocks, one idea per line. WHAT I
     # FOUND, WHAT I WILL DO (asks Y), WHAT I DID, RESULT, WHAT YOU DO NEXT.
