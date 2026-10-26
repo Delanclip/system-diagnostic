@@ -699,7 +699,11 @@ function Invoke-Detection {
     # The microphone: always named, never touched.
     if ($state.AudioNodes.Count -gt 0) {
         $a = $state.AudioNodes[0]
-        Add-Finding 'MIC' 'NOTE' ('MI_01 (microphone) present: status ' + $a.Status + ', problem ' + $a.Problem + ', service ' + $a.Service + ', ' + $a.Inf) -Human ('The second "' + $cameraDisplayName + '" entry in Device Manager is the camera''s microphone. It is correct as it is and does not need to be uninstalled; this tool leaves it alone.')
+        # The microphone often shows error code 10 (its driver does not start): it
+        # is irrelevant for head tracking and must not be read as the camera fault.
+        $micHuman = 'The second "' + $cameraDisplayName + '" entry in Device Manager is the camera''s microphone. It does not need to be uninstalled; this tool leaves it alone.'
+        if ($a.Problem -ne 0) { $micHuman += ' Windows may show an error on it; that has no effect on head tracking.' } else { $micHuman += ' It is correct as it is.' }
+        Add-Finding 'MIC' 'NOTE' ('MI_01 (microphone) present: status ' + $a.Status + ', problem ' + $a.Problem + ', service ' + $a.Service + ', ' + $a.Inf) -Human $micHuman
     }
     foreach ($p in $state.AudioOnly) {
         Add-Finding ('AUDIO-' + $p.PublishedName) 'INFO' ('stored package ' + $p.PublishedName + ' names only MI_01 (' + $p.Kind + ', ' + $p.Provider + '); left alone')
